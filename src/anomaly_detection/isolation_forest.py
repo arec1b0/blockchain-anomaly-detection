@@ -27,44 +27,104 @@ class AnomalyDetectorIsolationForest:
         :param df: DataFrame containing the transaction data.
         :param contamination: The proportion of outliers in the data set (default is 1%).
         :param random_state: Seed for the random number generator to ensure reproducibility.
+        :raises ValueError: If df is None, empty, or missing required columns.
+        :raises TypeError: If df is not a pandas DataFrame or parameters are of incorrect type.
         """
-        self.df = df
+        # Validate DataFrame
+        if df is None:
+            raise ValueError("DataFrame cannot be None")
+        if not isinstance(df, pd.DataFrame):
+            raise TypeError(f"Expected pandas DataFrame, got {type(df).__name__}")
+        if len(df) == 0:
+            raise ValueError("DataFrame cannot be empty")
+
+        # Validate required columns
+        required_columns = ['value', 'gas', 'gasPrice']
+        missing_columns = [col for col in required_columns if col not in df.columns]
+        if missing_columns:
+            raise ValueError(f"DataFrame must contain the following columns: {missing_columns}")
+
+        # Validate contamination parameter
+        if not isinstance(contamination, (int, float)):
+            raise TypeError(f"contamination must be numeric, got {type(contamination).__name__}")
+        if not 0 < contamination < 1:
+            raise ValueError(f"contamination must be between 0 and 1 (exclusive), got {contamination}")
+
+        # Validate random_state parameter
+        if not isinstance(random_state, int):
+            raise TypeError(f"random_state must be an integer, got {type(random_state).__name__}")
+
+        self.df = df.copy()  # Create a copy to avoid modifying the original
         self.contamination = contamination
         self.random_state = random_state
-        self.model = IsolationForest(contamination=self.contamination,
-                                     random_state=self.random_state)
-        self.features = df[['value', 'gas', 'gasPrice']]  # Select features for analysis
+
+        try:
+            self.model = IsolationForest(contamination=self.contamination,
+                                         random_state=self.random_state)
+            self.features = self.df[['value', 'gas', 'gasPrice']]  # Select features for analysis
+            logger.info(f"AnomalyDetectorIsolationForest initialized with {len(self.df)} rows, contamination={contamination}")
+        except Exception as e:
+            logger.error(f"Error initializing Isolation Forest model: {e}")
+            raise RuntimeError(f"Failed to initialize Isolation Forest model: {e}") from e
 
     def train_model(self):
         """
         Trains the Isolation Forest model on the selected features of the dataset.
 
         :return: Trained Isolation Forest model.
+        :raises RuntimeError: If model training fails.
         """
-        logger.info("Training Isolation Forest model...")
-        self.model.fit(self.features)
-        logger.info("Model training completed.")
-        return self.model
+        try:
+            logger.info("Training Isolation Forest model...")
+            self.model.fit(self.features)
+            logger.info("Model training completed.")
+            return self.model
+        except Exception as e:
+            logger.error(f"Error training Isolation Forest model: {e}")
+            raise RuntimeError(f"Failed to train Isolation Forest model: {e}") from e
 
     def detect_anomalies(self):
         """
         Detects anomalies in the dataset using the trained Isolation Forest model.
 
         :return: DataFrame with an additional 'anomaly' column indicating normal or anomalous transactions.
+        :raises RuntimeError: If anomaly detection fails.
+        :raises ValueError: If model hasn't been trained yet.
         """
-        logger.info("Detecting anomalies using Isolation Forest model...")
-        self.df['anomaly'] = self.model.predict(self.features)
-        self.df['anomaly'] = self.df['anomaly'].map({1: 'normal', -1: 'anomaly'})
-        num_anomalies = len(self.df[self.df['anomaly'] == 'anomaly'])
-        logger.info(f"Detected {num_anomalies} anomalous transactions.")
-        return self.df
+        try:
+            # Check if model has been trained
+            if not hasattr(self.model, 'estimators_'):
+                raise ValueError("Model must be trained before detecting anomalies. Call train_model() first.")
+
+            logger.info("Detecting anomalies using Isolation Forest model...")
+            self.df['anomaly'] = self.model.predict(self.features)
+            self.df['anomaly'] = self.df['anomaly'].map({1: 'normal', -1: 'anomaly'})
+            num_anomalies = len(self.df[self.df['anomaly'] == 'anomaly'])
+            logger.info(f"Detected {num_anomalies} anomalous transactions.")
+            return self.df
+        except ValueError:
+            raise
+        except Exception as e:
+            logger.error(f"Error detecting anomalies: {e}")
+            raise RuntimeError(f"Failed to detect anomalies: {e}") from e
 
     def get_anomalies(self):
         """
         Returns the subset of the dataset that contains only the anomalous transactions.
 
         :return: DataFrame containing only anomalous transactions.
+        :raises ValueError: If anomaly detection hasn't been performed yet.
+        :raises RuntimeError: If retrieval fails.
         """
-        anomalies = self.df[self.df['anomaly'] == 'anomaly']
-        logger.info(f"Returning {len(anomalies)} anomalous transactions.")
-        return anomalies
+        try:
+            if 'anomaly' not in self.df.columns:
+                raise ValueError("Anomaly column not found. Run detect_anomalies() first.")
+
+            anomalies = self.df[self.df['anomaly'] == 'anomaly']
+            logger.info(f"Returning {len(anomalies)} anomalous transactions.")
+            return anomalies
+        except ValueError:
+            raise
+        except Exception as e:
+            logger.error(f"Error retrieving anomalies: {e}")
+            raise RuntimeError(f"Failed to retrieve anomalies: {e}") from e

@@ -9,11 +9,46 @@ Adheres to the Single Responsibility Principle (SRP) by focusing solely on data 
 
 import dask.dataframe as dd
 from dask.distributed import Client
+from typing import Optional
 from src.utils.logger import get_logger
+from src.utils.config import get_config
 
-# Initialize Dask client and logger
-client = Client()
+# Initialize logger
 logger = get_logger(__name__)
+
+# Global Dask client instance
+_dask_client = None
+
+
+def get_dask_client() -> Client:
+    """
+    Get or create a Dask client instance.
+
+    :return: Dask distributed Client instance.
+    """
+    global _dask_client
+    if _dask_client is None:
+        config = get_config()
+        try:
+            _dask_client = Client(
+                n_workers=config.DASK_N_WORKERS,
+                threads_per_worker=config.DASK_THREADS_PER_WORKER,
+                memory_limit=config.DASK_MEMORY_LIMIT,
+            )
+            logger.info(f"Dask client initialized with {config.DASK_N_WORKERS} workers")
+        except Exception as e:
+            logger.error(f"Failed to initialize Dask client: {e}")
+            raise
+    return _dask_client
+
+
+def close_dask_client():
+    """Close the Dask client if it exists."""
+    global _dask_client
+    if _dask_client is not None:
+        _dask_client.close()
+        _dask_client = None
+        logger.info("Dask client closed")
 
 
 class DataCleanerDask:
@@ -21,13 +56,22 @@ class DataCleanerDask:
     DataCleanerDask class provides parallel data cleaning operations using Dask.
     """
 
-    def __init__(self, df):
+    def __init__(self, df, npartitions: Optional[int] = None, client: Optional[Client] = None):
         """
-        Initializes the DataCleanerDask with the provided Dask DataFrame.
+        Initializes the DataCleanerDask with the provided DataFrame.
 
-        :param df: Dask DataFrame containing transaction data.
+        :param df: Pandas DataFrame containing transaction data.
+        :param npartitions: Number of partitions for Dask DataFrame (default: 4).
+        :param client: Optional Dask client instance. If not provided, uses the global client.
+        :raises ValueError: If df is None or empty.
         """
-        self.df = dd.from_pandas(df, npartitions=4)
+        if df is None or len(df) == 0:
+            raise ValueError("DataFrame cannot be None or empty")
+
+        self.client = client if client is not None else get_dask_client()
+        self.npartitions = npartitions or 4
+        self.df = dd.from_pandas(df, npartitions=self.npartitions)
+        logger.info(f"DataCleanerDask initialized with {self.npartitions} partitions")
 
     def remove_duplicates(self):
         """

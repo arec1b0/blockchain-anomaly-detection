@@ -9,52 +9,62 @@ Adheres to the Single Responsibility Principle (SRP) by coordinating all system 
 
 from src.api.etherscan_api import EtherscanAPI
 from src.data_processing.data_cleaning import DataCleaner
-from src.data_processing.data_cleaning_dask import DataCleanerDask
+from src.data_processing.data_cleaning_dask import DataCleanerDask, close_dask_client
 from src.data_processing.data_transformation import DataTransformer
 from src.anomaly_detection.isolation_forest import AnomalyDetectorIsolationForest
 from src.anomaly_detection.arima_model import ARIMAModel
 from src.visualization.visualization import DataVisualizer
 from src.utils.logger import get_logger
+from src.utils.sentry import init_sentry, capture_exception, close_sentry
+from src.utils.config import get_config
 import pandas as pd
 import os
 
 # Initialize logger
 logger = get_logger(__name__)
 
+# Initialize Sentry (if enabled)
+init_sentry()
+
 
 def main():
     """
-    Main function orchestrating the entire process of fetching, cleaning, transforming, analyzing, 
+    Main function orchestrating the entire process of fetching, cleaning, transforming, analyzing,
     and visualizing transaction data.
     """
-    try:
-        # Step 1: Fetch transaction data using Etherscan API
-        api_key = os.getenv("ETHERSCAN_API_KEY")
-        if not api_key:
-            logger.error("Etherscan API key is missing. Set 'ETHERSCAN_API_KEY' environment variable.")
-            return
+    # Get configuration at the start so it's available in finally block
+    config = get_config()
 
-        address = os.getenv("ETHERSCAN_ADDRESS")
+    try:
+
+        # Validate configuration
+        try:
+            config.validate()
+        except ValueError as e:
+            logger.error(f"Configuration validation failed: {e}")
+            return 1
+
+        # Step 1: Fetch transaction data using Etherscan API
+        address = config.ETHERSCAN_ADDRESS
         if not address:
             logger.error("Ethereum address is missing. Set 'ETHERSCAN_ADDRESS' environment variable.")
-            return
+            return 1
 
         logger.info(f"Fetching transactions for address: {address}")
 
-        api = EtherscanAPI(api_key=api_key)
+        api = EtherscanAPI()
         transactions = api.get_transactions(address)
 
         if not transactions:
             logger.error("Failed to fetch transactions from Etherscan API.")
-            return
+            return 1
 
         # Convert the transactions data into a DataFrame
         df = pd.DataFrame(transactions)
         logger.info(f"Fetched {len(df)} transactions for address {address}.")
 
         # Step 2: Data Cleaning
-        use_dask = os.getenv("USE_DASK", "false").lower() == "true"
-        if use_dask:
+        if config.USE_DASK:
             logger.info("Using Dask for data cleaning.")
             cleaner = DataCleanerDask(df)
         else:
@@ -88,9 +98,30 @@ def main():
         visualizer.plot_anomalies()
         visualizer.plot_distribution('value')
 
+        logger.info("Pipeline execution completed successfully.")
+        return 0
+
     except Exception as e:
         logger.error(f"An error occurred during the execution of the pipeline: {str(e)}", exc_info=True)
+        capture_exception(e, context={"stage": "main_pipeline"})
+        return 1
+    finally:
+        # Clean up resources
+        try:
+            if config.USE_DASK:
+                try:
+                    close_dask_client()
+                except Exception as e:
+                    logger.warning(f"Error closing Dask client: {e}")
+        except Exception:
+            pass  # Config might not be available if error occurred very early
+
+        # Close Sentry
+        try:
+            close_sentry()
+        except Exception as e:
+            logger.warning(f"Error closing Sentry: {e}")
 
 
 if __name__ == "__main__":
-    main()
+    exit(main())
