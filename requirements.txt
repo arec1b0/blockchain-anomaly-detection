@@ -10,3 +10,31 @@ distributed==2023.5.0
 sentry-sdk==1.25.0
 pytest==7.3.2
 docker==6.1.2
+
+# Kafka and streaming
+kafka-python==2.0.2
+confluent-kafka==2.3.0
+
+# FastAPI and API dependencies
+fastapi==0.104.1
+uvicorn[standard]==0.24.0
+pydantic==2.4.2
+pydantic-settings==2.0.3
+python-multipart==0.0.6
+
+# Monitoring and metrics
+prometheus-client==0.19.0
+prometheus-fastapi-instrumentator==6.1.0
+
+# Additional utilities
+python-dotenv==1.0.0
+python-json-logger==2.0.7
+aiofiles==23.2.1
+httpx==0.25.1
+psutil==5.9.6
+
+# Testing
+pytest-asyncio==0.21.1
+pytest-cov==4.1.0
+pytest-mock==3.12.0
+httpx==0.25.1
