@@ -5,6 +5,7 @@ Tests for monitoring and health check functionality.
 import pytest
 from unittest.mock import Mock, patch
 from src.api_server.monitoring import HealthChecker
+from datetime import datetime, timedelta
 
 
 class TestHealthChecker:
@@ -32,6 +33,8 @@ class TestHealthChecker:
         mock_memory.return_value.percent = 50
 
         checker = HealthChecker()
+        # Mock the start_time to be 6 seconds in the past
+        checker.start_time = datetime.utcnow() - timedelta(seconds=6)
         result = checker.check_readiness()
 
         assert result['ready'] is True

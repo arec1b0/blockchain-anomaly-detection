@@ -50,6 +50,13 @@ class TestDataCleanerDask:
     Note: These tests use mocked Dask to avoid Dask/Pandas compatibility issues.
     The tests verify the structure and behavior of the DataCleanerDask class.
     """
+    def setup_method(self):
+        """Reset the mock before each test"""
+        mock_dd.reset_mock()
+
+    def teardown_method(self):
+        """Reset the mock after each test"""
+        mock_dd.reset_mock()
 
     def test_init(self, sample_data):
         """Test DataCleanerDask initialization"""
@@ -178,6 +185,14 @@ class TestDataCleanerDask:
 
 class TestDataCleanerDaskValidation:
     """Tests for DataCleanerDask input validation"""
+
+    def setup_method(self):
+        """Reset the mock before each test"""
+        mock_dd.reset_mock()
+
+    def teardown_method(self):
+        """Reset the mock after each test"""
+        mock_dd.reset_mock()
 
     def test_init_with_none_dataframe(self):
         """Test that DataCleanerDask raises ValueError when df is None"""

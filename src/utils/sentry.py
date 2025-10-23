@@ -21,9 +21,14 @@ _sentry_initialized = False
 
 def init_sentry() -> bool:
     """
-    Initialize Sentry SDK for error tracking.
+    Initializes the Sentry SDK for error tracking.
 
-    :return: True if Sentry was successfully initialized, False otherwise.
+    This function configures and initializes the Sentry SDK based on the
+    environment variables. Sentry will not be initialized if it is disabled
+    or the DSN is not provided.
+
+    Returns:
+        bool: True if Sentry was successfully initialized, False otherwise.
     """
     global _sentry_initialized
 
@@ -63,11 +68,16 @@ def init_sentry() -> bool:
 
 def capture_exception(error: Exception, context: Optional[dict] = None) -> Optional[str]:
     """
-    Capture an exception and send it to Sentry.
+    Captures an exception and sends it to Sentry.
 
-    :param error: The exception to capture.
-    :param context: Optional dictionary with additional context.
-    :return: Event ID if successfully sent to Sentry, None otherwise.
+    Args:
+        error (Exception): The exception to capture.
+        context (Optional[dict]): An optional dictionary with additional context.
+            Defaults to None.
+
+    Returns:
+        Optional[str]: The event ID if the exception was successfully sent to Sentry,
+            None otherwise.
     """
     if not _sentry_initialized:
         logger.debug("Sentry not initialized, skipping exception capture")
@@ -92,12 +102,18 @@ def capture_exception(error: Exception, context: Optional[dict] = None) -> Optio
 
 def capture_message(message: str, level: str = 'info', context: Optional[dict] = None) -> Optional[str]:
     """
-    Capture a message and send it to Sentry.
+    Captures a message and sends it to Sentry.
 
-    :param message: The message to capture.
-    :param level: Severity level ('debug', 'info', 'warning', 'error', 'fatal').
-    :param context: Optional dictionary with additional context.
-    :return: Event ID if successfully sent to Sentry, None otherwise.
+    Args:
+        message (str): The message to capture.
+        level (str): The severity level of the message (e.g., 'debug', 'info',
+            'warning', 'error', 'fatal'). Defaults to 'info'.
+        context (Optional[dict]): An optional dictionary with additional context.
+            Defaults to None.
+
+    Returns:
+        Optional[str]: The event ID if the message was successfully sent to Sentry,
+            None otherwise.
     """
     if not _sentry_initialized:
         logger.debug("Sentry not initialized, skipping message capture")
@@ -123,12 +139,13 @@ def capture_message(message: str, level: str = 'info', context: Optional[dict] =
 def set_user(user_id: Optional[str] = None, email: Optional[str] = None,
              username: Optional[str] = None, **kwargs) -> None:
     """
-    Set user information for Sentry context.
+    Sets the user information for the Sentry context.
 
-    :param user_id: User ID.
-    :param email: User email.
-    :param username: Username.
-    :param kwargs: Additional user attributes.
+    Args:
+        user_id (Optional[str]): The user ID. Defaults to None.
+        email (Optional[str]): The user's email address. Defaults to None.
+        username (Optional[str]): The username. Defaults to None.
+        **kwargs: Additional user attributes.
     """
     if not _sentry_initialized:
         logger.debug("Sentry not initialized, skipping user context")
@@ -153,12 +170,14 @@ def set_user(user_id: Optional[str] = None, email: Optional[str] = None,
 def add_breadcrumb(message: str, category: str = 'default',
                    level: str = 'info', data: Optional[dict] = None) -> None:
     """
-    Add a breadcrumb to Sentry for better error context.
+    Adds a breadcrumb to Sentry for better error context.
 
-    :param message: Breadcrumb message.
-    :param category: Breadcrumb category.
-    :param level: Severity level.
-    :param data: Additional data dictionary.
+    Args:
+        message (str): The breadcrumb message.
+        category (str): The category of the breadcrumb. Defaults to 'default'.
+        level (str): The severity level of the breadcrumb. Defaults to 'info'.
+        data (Optional[dict]): An optional dictionary with additional data.
+            Defaults to None.
     """
     if not _sentry_initialized:
         logger.debug("Sentry not initialized, skipping breadcrumb")
@@ -177,9 +196,11 @@ def add_breadcrumb(message: str, category: str = 'default',
 
 def close_sentry(timeout: int = 2) -> None:
     """
-    Flush and close Sentry client.
+    Flushes and closes the Sentry client.
 
-    :param timeout: Timeout in seconds to wait for pending events.
+    Args:
+        timeout (int): The timeout in seconds to wait for pending events to be sent.
+            Defaults to 2.
     """
     global _sentry_initialized
 

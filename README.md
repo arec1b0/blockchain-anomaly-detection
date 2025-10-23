@@ -2,6 +2,21 @@
 
 Welcome to the **Blockchain Anomaly Detection** project! My name is Daniil Krizhanonovskyi, and I created this open-source tool to provide an effective way to detect anomalies in blockchain transaction data using machine learning techniques. This project offers a comprehensive solution for cleaning, processing, analyzing, and visualizing blockchain data with the aim of identifying unusual patterns that could represent fraudulent or suspicious activity.
 
+## Table of Contents
+
+- [Project Overview](#project-overview)
+- [Features](#features)
+- [Project Structure](#project-structure)
+- [Installation](#installation)
+- [Usage](#usage)
+- [Testing](#testing)
+- [Architecture](#architecture)
+- [Environment Variables](#environment-variables)
+- [Docker](#docker)
+- [CI/CD Pipeline](#cicd-pipeline)
+- [Contribution](#contribution)
+- [License](#license)
+
 ## Project Overview
 
 The **Blockchain Anomaly Detection** project integrates multiple machine learning models to analyze transaction data, including:
@@ -362,4 +377,3 @@ This project is licensed under the MIT License. You are free to use, modify, and
 Thank you for exploring the **Blockchain Anomaly Detection** project! I hope this tool will help you in your efforts to analyze blockchain data and detect potential fraudulent activities. If you have any questions or suggestions, feel free to reach out.
 
 — Daniil Krizhanonovskyi
-

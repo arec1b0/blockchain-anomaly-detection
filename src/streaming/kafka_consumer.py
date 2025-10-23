@@ -1,5 +1,9 @@
 """
 Kafka consumer service for streaming blockchain transaction data.
+
+This module provides a service for consuming blockchain transaction data from
+Kafka topics. It includes functionalities for connecting to Kafka, consuming
+messages, and handling consumer lag.
 """
 
 import json
@@ -15,25 +19,25 @@ logger = logging.getLogger(__name__)
 # Prometheus metrics
 kafka_messages_consumed = Counter(
     'kafka_messages_consumed_total',
-    'Total number of Kafka messages consumed',
+    'Total number of Kafka messages consumed.',
     ['topic', 'status']
 )
 
 kafka_processing_duration = Histogram(
     'kafka_message_processing_duration_seconds',
-    'Time spent processing Kafka messages',
+    'Time spent processing Kafka messages in seconds.',
     ['topic']
 )
 
 kafka_consumer_lag = Gauge(
     'kafka_consumer_lag',
-    'Current consumer lag',
+    'Current consumer lag.',
     ['topic', 'partition']
 )
 
 kafka_errors = Counter(
     'kafka_errors_total',
-    'Total number of Kafka errors',
+    'Total number of Kafka errors.',
     ['error_type']
 )
 
@@ -43,10 +47,12 @@ class KafkaConsumerService:
     Service for consuming blockchain transaction data from Kafka topics.
 
     Attributes:
-        bootstrap_servers (str): Kafka bootstrap servers
-        topic (str): Kafka topic to consume from
-        group_id (str): Consumer group ID
-        consumer (KafkaConsumer): Kafka consumer instance
+        bootstrap_servers (str): A comma-separated list of Kafka bootstrap servers.
+        topic (str): The Kafka topic to consume messages from.
+        group_id (str): The consumer group ID.
+        consumer (Optional[KafkaConsumer]): The Kafka consumer instance.
+        is_running (bool): A flag indicating if the consumer is running.
+        config (Dict[str, Any]): A dictionary of Kafka consumer configurations.
     """
 
     def __init__(
@@ -60,16 +66,19 @@ class KafkaConsumerService:
         max_poll_records: int = 500
     ):
         """
-        Initialize Kafka consumer service.
+        Initializes the KafkaConsumerService.
 
         Args:
-            bootstrap_servers: Kafka broker addresses
-            topic: Topic to consume messages from
-            group_id: Consumer group identifier
-            auto_offset_reset: Where to start reading messages
-            enable_auto_commit: Whether to auto-commit offsets
-            auto_commit_interval_ms: Auto-commit interval in milliseconds
-            max_poll_records: Maximum records per poll
+            bootstrap_servers (str): A comma-separated list of Kafka broker addresses.
+                Defaults to "localhost:9092".
+            topic (str): The topic to consume messages from. Defaults to "blockchain-transactions".
+            group_id (str): The consumer group identifier. Defaults to "anomaly-detection-group".
+            auto_offset_reset (str): The position to start reading messages from.
+                Defaults to "latest".
+            enable_auto_commit (bool): Whether to auto-commit offsets. Defaults to True.
+            auto_commit_interval_ms (int): The auto-commit interval in milliseconds.
+                Defaults to 5000.
+            max_poll_records (int): The maximum number of records per poll. Defaults to 500.
         """
         self.bootstrap_servers = bootstrap_servers
         self.topic = topic
@@ -92,10 +101,10 @@ class KafkaConsumerService:
 
     def connect(self) -> None:
         """
-        Establish connection to Kafka broker and subscribe to topic.
+        Establishes a connection to the Kafka broker and subscribes to the topic.
 
         Raises:
-            KafkaError: If connection fails
+            KafkaError: If the connection fails.
         """
         try:
             self.consumer = KafkaConsumer(**self.config)
@@ -107,7 +116,9 @@ class KafkaConsumerService:
             raise
 
     def disconnect(self) -> None:
-        """Close Kafka consumer connection."""
+        """
+        Closes the Kafka consumer connection.
+        """
         if self.consumer:
             self.consumer.close()
             logger.info("Kafka consumer disconnected")
@@ -119,12 +130,16 @@ class KafkaConsumerService:
         max_messages: Optional[int] = None
     ) -> None:
         """
-        Start consuming messages from Kafka topic.
+        Starts consuming messages from the Kafka topic.
 
         Args:
-            callback: Function to process each message
-            timeout_ms: Poll timeout in milliseconds
-            max_messages: Maximum number of messages to process (None for infinite)
+            callback (Callable[[Dict[str, Any]], None]): The function to process each message.
+            timeout_ms (int): The poll timeout in milliseconds. Defaults to 1000.
+            max_messages (Optional[int]): The maximum number of messages to process.
+                If None, the consumer will run indefinitely. Defaults to None.
+
+        Raises:
+            RuntimeError: If the consumer is not connected.
         """
         if not self.consumer:
             raise RuntimeError("Consumer not connected. Call connect() first.")
@@ -189,16 +204,18 @@ class KafkaConsumerService:
             self.stop()
 
     def stop(self) -> None:
-        """Stop consuming messages."""
+        """
+        Stops consuming messages.
+        """
         self.is_running = False
         logger.info("Kafka consumer stopped")
 
     def get_consumer_lag(self) -> Dict[str, int]:
         """
-        Get current consumer lag for all partitions.
+        Gets the current consumer lag for all partitions.
 
         Returns:
-            Dictionary mapping partition to lag
+            Dict[str, int]: A dictionary mapping each partition to its lag.
         """
         if not self.consumer:
             return {}
@@ -233,13 +250,17 @@ class KafkaConsumerService:
         return lag_info
 
     def seek_to_beginning(self) -> None:
-        """Reset consumer to beginning of all partitions."""
+        """
+        Resets the consumer to the beginning of all partitions.
+        """
         if self.consumer:
             self.consumer.seek_to_beginning()
             logger.info("Consumer seeked to beginning")
 
     def seek_to_end(self) -> None:
-        """Move consumer to end of all partitions."""
+        """
+        Moves the consumer to the end of all partitions.
+        """
         if self.consumer:
             self.consumer.seek_to_end()
             logger.info("Consumer seeked to end")

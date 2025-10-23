@@ -6,6 +6,7 @@ import pytest
 from fastapi.testclient import TestClient
 from unittest.mock import Mock, patch, MagicMock
 import os
+from datetime import datetime, timedelta
 
 # Set environment variables before importing app
 os.environ['KAFKA_ENABLED'] = 'false'
@@ -16,7 +17,8 @@ from src.api_server.app import app
 @pytest.fixture
 def client():
     """Create test client."""
-    return TestClient(app)
+    with patch('src.api_server.app.stream_processor', MagicMock()) as mock_stream_processor:
+        yield TestClient(app)
 
 
 class TestHealthEndpoints:
@@ -30,8 +32,10 @@ class TestHealthEndpoints:
         assert data['alive'] is True
         assert 'uptime_seconds' in data
 
-    def test_readiness_check(self, client):
+    @patch('src.api_server.app.health_checker.check_readiness')
+    def test_readiness_check(self, mock_check_readiness, client):
         """Test readiness endpoint."""
+        mock_check_readiness.return_value = {'ready': True}
         response = client.get("/health/ready")
         assert response.status_code == 200
         data = response.json()
