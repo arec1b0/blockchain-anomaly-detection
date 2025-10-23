@@ -13,10 +13,35 @@ from typing import Any, Dict
 
 
 class Config:
-    """Configuration class that loads all settings from environment variables."""
+    """
+    Configuration class that loads all settings from environment variables.
+
+    This class centralizes the management of configuration parameters, making it
+    easy to access and validate settings used throughout the application.
+
+    Attributes:
+        API_KEY (str): The Etherscan API key.
+        BASE_URL (str): The base URL for the Etherscan API.
+        ETHERSCAN_ADDRESS (str): The Ethereum address to monitor.
+        REQUEST_TIMEOUT (int): The timeout for HTTP requests in seconds.
+        MAX_RETRIES (int): The maximum number of retries for failed requests.
+        RETRY_BACKOFF (int): The backoff factor for retries.
+        ENVIRONMENT (str): The application environment (e.g., 'development', 'production').
+        LOG_LEVEL (str): The logging level for the application.
+        USE_DASK (bool): A flag to enable or disable Dask for parallel processing.
+        DASK_N_WORKERS (int): The number of Dask workers.
+        DASK_THREADS_PER_WORKER (int): The number of threads per Dask worker.
+        DASK_MEMORY_LIMIT (str): The memory limit for each Dask worker.
+        SENTRY_DSN (str): The DSN for Sentry error tracking.
+        SENTRY_ENABLED (bool): A flag to enable or disable Sentry.
+        SENTRY_ENVIRONMENT (str): The Sentry environment.
+        SENTRY_TRACES_SAMPLE_RATE (float): The traces sample rate for Sentry.
+    """
 
     def __init__(self):
-        """Initialize configuration from environment variables."""
+        """
+        Initializes the configuration from environment variables.
+        """
         # Etherscan API Configuration
         self.API_KEY = os.getenv("ETHERSCAN_API_KEY", "")
         self.BASE_URL = os.getenv("ETHERSCAN_BASE_URL", "https://api.etherscan.io/api")
@@ -45,10 +70,13 @@ class Config:
 
     def validate(self) -> bool:
         """
-        Validate that required configuration values are set.
+        Validates that the required configuration values are set.
 
-        :return: True if configuration is valid, False otherwise.
-        :raises: ValueError if required configuration is missing.
+        Returns:
+            bool: True if the configuration is valid.
+
+        Raises:
+            ValueError: If a required configuration is missing or invalid.
         """
         errors = []
 
@@ -74,9 +102,10 @@ class Config:
 
     def to_dict(self) -> Dict[str, Any]:
         """
-        Convert configuration to dictionary.
+        Converts the configuration to a dictionary.
 
-        :return: Dictionary containing all configuration values.
+        Returns:
+            Dict[str, Any]: A dictionary containing all configuration values.
         """
         return {
             key: value
@@ -91,9 +120,13 @@ _config = None
 
 def get_config() -> Config:
     """
-    Get the global configuration instance.
+    Gets the global configuration instance.
 
-    :return: Configuration object.
+    This function ensures that the configuration is loaded only once and returns
+    the same instance on subsequent calls.
+
+    Returns:
+        Config: The global configuration object.
     """
     global _config
     if _config is None:

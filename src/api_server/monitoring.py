@@ -1,5 +1,10 @@
 """
 Monitoring and health check utilities for the API server.
+
+This module provides functionalities for monitoring the health and performance
+of the API server. It includes a `HealthChecker` class for performing
+health checks and Prometheus metrics for tracking various aspects of the
+application.
 """
 
 import logging
@@ -23,47 +28,47 @@ app_info.info({
 # HTTP metrics
 http_requests_total = Counter(
     'http_requests_total',
-    'Total HTTP requests',
+    'Total number of HTTP requests.',
     ['method', 'endpoint', 'status']
 )
 
 http_request_duration_seconds = Histogram(
     'http_request_duration_seconds',
-    'HTTP request latency',
+    'Latency of HTTP requests in seconds.',
     ['method', 'endpoint']
 )
 
 http_requests_in_progress = Gauge(
     'http_requests_in_progress',
-    'HTTP requests currently being processed',
+    'Number of HTTP requests currently in progress.',
     ['method', 'endpoint']
 )
 
 # System metrics
 system_cpu_usage = Gauge(
     'system_cpu_usage_percent',
-    'System CPU usage percentage'
+    'Current system-wide CPU utilization as a percentage.'
 )
 
 system_memory_usage = Gauge(
     'system_memory_usage_bytes',
-    'System memory usage in bytes'
+    'Total system memory usage in bytes.'
 )
 
 system_memory_available = Gauge(
     'system_memory_available_bytes',
-    'System available memory in bytes'
+    'Total system memory available in bytes.'
 )
 
 system_disk_usage = Gauge(
     'system_disk_usage_percent',
-    'System disk usage percentage'
+    'Current system disk utilization as a percentage.'
 )
 
 # Application metrics
 app_uptime_seconds = Gauge(
     'app_uptime_seconds',
-    'Application uptime in seconds'
+    'Uptime of the application in seconds.'
 )
 
 app_start_time = time.time()
@@ -71,21 +76,30 @@ app_start_time = time.time()
 
 class HealthChecker:
     """
-    Health check manager for monitoring service health.
+    Manages and performs health checks for the service.
+
+    This class provides methods to check the overall health, readiness, and liveness
+    of the service. It also includes helper methods for checking system resources
+    like CPU, memory, and disk.
     """
 
     def __init__(self):
-        """Initialize health checker."""
+        """
+        Initializes the HealthChecker.
+        """
         self.start_time = datetime.utcnow()
         self.checks = {}
         logger.info("Health checker initialized")
 
     def check_health(self) -> Dict[str, Any]:
         """
-        Perform comprehensive health check.
+        Performs a comprehensive health check.
+
+        This method checks the health of various system resources and aggregates
+        the results to determine the overall health status of the service.
 
         Returns:
-            Dictionary with health status
+            Dict[str, Any]: A dictionary containing the health status and details.
         """
         # Update system metrics
         self._update_system_metrics()
@@ -116,10 +130,13 @@ class HealthChecker:
 
     def check_readiness(self) -> Dict[str, Any]:
         """
-        Check if service is ready to accept traffic.
+        Checks if the service is ready to accept traffic.
+
+        This method checks if the service has been running for a minimum amount of time
+        and has sufficient memory available.
 
         Returns:
-            Dictionary with readiness status
+            Dict[str, Any]: A dictionary containing the readiness status.
         """
         readiness_status = {
             'ready': True,
@@ -143,10 +160,10 @@ class HealthChecker:
 
     def check_liveness(self) -> Dict[str, Any]:
         """
-        Check if service is alive and responsive.
+        Checks if the service is alive and responsive.
 
         Returns:
-            Dictionary with liveness status
+            Dict[str, Any]: A dictionary containing the liveness status.
         """
         return {
             'alive': True,
@@ -155,7 +172,11 @@ class HealthChecker:
         }
 
     def _update_system_metrics(self) -> None:
-        """Update Prometheus system metrics."""
+        """
+        Updates the Prometheus system metrics.
+
+        This method collects and updates metrics for CPU, memory, and disk usage.
+        """
         try:
             # CPU usage
             cpu_percent = psutil.cpu_percent(interval=0.1)
@@ -175,10 +196,10 @@ class HealthChecker:
 
     def _check_system_health(self) -> Dict[str, Any]:
         """
-        Check system resource health.
+        Checks the system resource health.
 
         Returns:
-            System health status
+            Dict[str, Any]: A dictionary containing the system health status.
         """
         try:
             cpu_percent = psutil.cpu_percent(interval=0.1)
@@ -203,10 +224,10 @@ class HealthChecker:
 
     def _check_memory_health(self) -> Dict[str, Any]:
         """
-        Check memory health.
+        Checks the memory health.
 
         Returns:
-            Memory health status
+            Dict[str, Any]: A dictionary containing the memory health status.
         """
         try:
             memory = psutil.virtual_memory()
@@ -232,10 +253,10 @@ class HealthChecker:
 
     def _check_disk_health(self) -> Dict[str, Any]:
         """
-        Check disk health.
+        Checks the disk health.
 
         Returns:
-            Disk health status
+            Dict[str, Any]: A dictionary containing the disk health status.
         """
         try:
             disk = psutil.disk_usage('/')

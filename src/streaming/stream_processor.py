@@ -1,5 +1,10 @@
 """
 Stream processor for real-time blockchain anomaly detection.
+
+This module defines the `StreamProcessor` class, which is responsible for
+processing streaming blockchain transactions for real-time anomaly detection.
+It receives transaction data, applies data transformations, and uses trained
+machine learning models to detect anomalies.
 """
 
 import logging
@@ -18,38 +23,46 @@ logger = logging.getLogger(__name__)
 # Prometheus metrics
 transactions_processed = Counter(
     'transactions_processed_total',
-    'Total number of transactions processed',
+    'Total number of transactions processed.',
     ['status']
 )
 
 anomalies_detected = Counter(
     'anomalies_detected_total',
-    'Total number of anomalies detected',
+    'Total number of anomalies detected.',
     ['severity']
 )
 
 processing_duration = Histogram(
     'stream_processing_duration_seconds',
-    'Time spent processing transactions'
+    'Time spent processing transactions in seconds.'
 )
 
 active_transactions = Gauge(
     'active_transactions_current',
-    'Current number of transactions being processed'
+    'Current number of transactions being processed.'
 )
 
 model_score = Gauge(
     'anomaly_model_score',
-    'Latest anomaly score from the model'
+    'Latest anomaly score from the model.'
 )
 
 
 class StreamProcessor:
     """
-    Process streaming blockchain transactions for real-time anomaly detection.
+    Processes streaming blockchain transactions for real-time anomaly detection.
 
-    This processor receives transaction data from Kafka, applies data transformations,
-    and uses trained ML models to detect anomalies in real-time.
+    This processor receives transaction data, applies data transformations,
+    and uses trained machine learning models to detect anomalies in real-time.
+
+    Attributes:
+        model_path (Optional[str]): The path to the pre-trained model file.
+        batch_size (int): The number of transactions to batch before processing.
+        contamination (float): The expected proportion of anomalies in the data.
+        model (Optional[AnomalyDetectorIsolationForest]): The anomaly detection model.
+        transaction_buffer (List[Dict[str, Any]]): A buffer for incoming transactions.
+        anomaly_buffer (List[Dict[str, Any]]): A buffer for detected anomalies.
     """
 
     def __init__(
@@ -59,12 +72,15 @@ class StreamProcessor:
         contamination: float = 0.01
     ):
         """
-        Initialize the stream processor.
+        Initializes the StreamProcessor.
 
         Args:
-            model_path: Path to pre-trained model file (pickle format)
-            batch_size: Number of transactions to batch before processing
-            contamination: Expected proportion of anomalies in the data
+            model_path (Optional[str]): The path to the pre-trained model file in pickle format.
+                Defaults to None.
+            batch_size (int): The number of transactions to batch before processing.
+                Defaults to 100.
+            contamination (float): The expected proportion of anomalies in the data.
+                Defaults to 0.01.
         """
         self.model_path = model_path
         self.batch_size = batch_size
@@ -87,14 +103,14 @@ class StreamProcessor:
 
     def load_model(self, model_path: str) -> None:
         """
-        Load a pre-trained model from disk.
+        Loads a pre-trained model from disk.
 
         Args:
-            model_path: Path to the model file
+            model_path (str): The path to the model file.
 
         Raises:
-            FileNotFoundError: If model file doesn't exist
-            Exception: If model loading fails
+            FileNotFoundError: If the model file does not exist.
+            Exception: If the model loading fails.
         """
         try:
             with open(model_path, 'rb') as f:
@@ -109,13 +125,13 @@ class StreamProcessor:
 
     def save_model(self, model_path: str) -> None:
         """
-        Save the current model to disk.
+        Saves the current model to disk.
 
         Args:
-            model_path: Path where to save the model
+            model_path (str): The path where the model should be saved.
 
         Raises:
-            Exception: If model saving fails
+            Exception: If the model saving fails.
         """
         try:
             os.makedirs(os.path.dirname(model_path), exist_ok=True)
@@ -128,10 +144,10 @@ class StreamProcessor:
 
     def process_transaction(self, transaction: Dict[str, Any]) -> None:
         """
-        Process a single transaction from the stream.
+        Processes a single transaction from the stream.
 
         Args:
-            transaction: Transaction data from Kafka
+            transaction (Dict[str, Any]): The transaction data from Kafka.
         """
         with processing_duration.time():
             active_transactions.inc()
@@ -156,16 +172,16 @@ class StreamProcessor:
 
     def _transform_transaction(self, transaction: Dict[str, Any]) -> Dict[str, Any]:
         """
-        Transform and validate transaction data.
+        Transforms and validates transaction data.
 
         Args:
-            transaction: Raw transaction data
+            transaction (Dict[str, Any]): The raw transaction data.
 
         Returns:
-            Transformed transaction data
+            Dict[str, Any]: The transformed transaction data.
 
         Raises:
-            ValueError: If required fields are missing or invalid
+            ValueError: If required fields are missing or have invalid values.
         """
         # Required fields
         required_fields = ['hash', 'value', 'gas', 'gasPrice']
@@ -199,7 +215,7 @@ class StreamProcessor:
 
     def _process_batch(self) -> None:
         """
-        Process a batch of transactions for anomaly detection.
+        Processes a batch of transactions for anomaly detection.
         """
         if not self.transaction_buffer:
             return
@@ -272,13 +288,13 @@ class StreamProcessor:
 
     def _calculate_severity(self, anomaly: pd.Series) -> str:
         """
-        Calculate severity level of an anomaly.
+        Calculates the severity level of an anomaly.
 
         Args:
-            anomaly: Anomaly transaction data
+            anomaly (pd.Series): The anomaly transaction data.
 
         Returns:
-            Severity level: 'low', 'medium', 'high', or 'critical'
+            str: The severity level, which can be 'low', 'medium', 'high', or 'critical'.
         """
         try:
             # Calculate deviation from mean
@@ -300,30 +316,33 @@ class StreamProcessor:
 
     def get_anomalies(self, limit: Optional[int] = None) -> List[Dict[str, Any]]:
         """
-        Get detected anomalies from the buffer.
+        Gets the detected anomalies from the buffer.
 
         Args:
-            limit: Maximum number of anomalies to return
+            limit (Optional[int]): The maximum number of anomalies to return.
+                If None, all anomalies are returned. Defaults to None.
 
         Returns:
-            List of anomaly records
+            List[Dict[str, Any]]: A list of anomaly records.
         """
         if limit:
             return self.anomaly_buffer[-limit:]
         return self.anomaly_buffer.copy()
 
     def clear_anomaly_buffer(self) -> None:
-        """Clear the anomaly buffer."""
+        """
+        Clears the anomaly buffer.
+        """
         count = len(self.anomaly_buffer)
         self.anomaly_buffer.clear()
         logger.info(f"Cleared {count} anomalies from buffer")
 
     def get_stats(self) -> Dict[str, Any]:
         """
-        Get processing statistics.
+        Gets the processing statistics.
 
         Returns:
-            Dictionary with processing stats
+            Dict[str, Any]: A dictionary containing processing statistics.
         """
         return {
             'buffer_size': len(self.transaction_buffer),
@@ -335,7 +354,7 @@ class StreamProcessor:
 
     def flush(self) -> None:
         """
-        Force process remaining transactions in buffer.
+        Forces the processing of the remaining transactions in the buffer.
         """
         if self.transaction_buffer:
             logger.info(f"Flushing {len(self.transaction_buffer)} transactions")

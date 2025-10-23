@@ -24,7 +24,12 @@ def get_dask_client() -> Client:
     """
     Get or create a Dask client instance.
 
-    :return: Dask distributed Client instance.
+    This function initializes a Dask client with the configuration specified
+    in the environment variables. If a client has already been initialized,
+    it returns the existing client.
+
+    Returns:
+        Client: A Dask distributed Client instance.
     """
     global _dask_client
     if _dask_client is None:
@@ -43,7 +48,9 @@ def get_dask_client() -> Client:
 
 
 def close_dask_client():
-    """Close the Dask client if it exists."""
+    """
+    Close the Dask client if it exists.
+    """
     global _dask_client
     if _dask_client is not None:
         _dask_client.close()
@@ -53,17 +60,25 @@ def close_dask_client():
 
 class DataCleanerDask:
     """
-    DataCleanerDask class provides parallel data cleaning operations using Dask.
+    Provides parallel data cleaning operations using Dask.
+
+    This class is designed to handle large datasets efficiently by leveraging
+    Dask for parallel and distributed data processing.
     """
 
     def __init__(self, df, npartitions: Optional[int] = None, client: Optional[Client] = None):
         """
         Initializes the DataCleanerDask with the provided DataFrame.
 
-        :param df: Pandas DataFrame containing transaction data.
-        :param npartitions: Number of partitions for Dask DataFrame (default: 4).
-        :param client: Optional Dask client instance. If not provided, uses the global client.
-        :raises ValueError: If df is None or empty.
+        Args:
+            df (pd.DataFrame): The Pandas DataFrame containing transaction data.
+            npartitions (Optional[int]): The number of partitions for the Dask DataFrame.
+                Defaults to 4.
+            client (Optional[Client]): An optional Dask client instance. If not provided,
+                a global client will be used.
+
+        Raises:
+            ValueError: If the input DataFrame is None or empty.
         """
         if df is None or len(df) == 0:
             raise ValueError("DataFrame cannot be None or empty")
@@ -77,7 +92,8 @@ class DataCleanerDask:
         """
         Removes duplicate rows from the Dask DataFrame in parallel.
 
-        :return: Dask DataFrame without duplicates.
+        Returns:
+            dd.DataFrame: A Dask DataFrame with duplicate rows removed.
         """
         initial_count = len(self.df)
         self.df = self.df.drop_duplicates()
@@ -87,9 +103,10 @@ class DataCleanerDask:
 
     def handle_missing_values(self):
         """
-        Handles missing values in the Dask DataFrame by filling them with default values (0).
+        Handles missing values in the Dask DataFrame by filling them with a default value (0).
 
-        :return: Cleaned Dask DataFrame with no missing values.
+        Returns:
+            dd.DataFrame: A Dask DataFrame with missing values handled.
         """
         self.df = self.df.fillna(0)
         logger.info("Handled missing values using Dask by filling with default value 0.")
@@ -97,9 +114,12 @@ class DataCleanerDask:
 
     def filter_invalid_transactions(self):
         """
-        Filters out invalid transactions in the Dask DataFrame, such as those with zero or negative value.
+        Filters out invalid transactions from the Dask DataFrame.
 
-        :return: Dask DataFrame with valid transactions only.
+        This method removes transactions with zero or negative values.
+
+        Returns:
+            dd.DataFrame: A Dask DataFrame with invalid transactions filtered out.
         """
         self.df['value'] = dd.to_numeric(self.df['value'], errors='coerce')
         self.df = self.df[self.df['value'] > 0]
@@ -108,10 +128,15 @@ class DataCleanerDask:
 
     def clean_data(self):
         """
-        Executes all cleaning steps in parallel using Dask: removes duplicates, handles missing values,
-        and filters invalid transactions.
+        Executes all data cleaning steps in parallel using Dask.
 
-        :return: Fully cleaned Dask DataFrame.
+        This method performs the following cleaning operations:
+        1. Removes duplicate rows.
+        2. Handles missing values.
+        3. Filters invalid transactions.
+
+        Returns:
+            pd.DataFrame: A fully cleaned Pandas DataFrame.
         """
         self.remove_duplicates()
         self.handle_missing_values()

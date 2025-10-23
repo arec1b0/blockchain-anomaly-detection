@@ -9,6 +9,7 @@ import os
 from unittest.mock import Mock, patch, MagicMock
 
 from src.streaming.stream_processor import StreamProcessor
+from src.anomaly_detection.isolation_forest import AnomalyDetectorIsolationForest
 
 
 class TestStreamProcessor:
@@ -271,8 +272,7 @@ class TestStreamProcessor:
 
         assert len(processor.transaction_buffer) == 0
 
-    @patch('src.streaming.stream_processor.AnomalyDetectorIsolationForest')
-    def test_save_and_load_model(self, mock_detector):
+    def test_save_and_load_model(self):
         """Test model saving and loading."""
         processor = StreamProcessor()
 
@@ -280,14 +280,21 @@ class TestStreamProcessor:
             model_path = f.name
 
         try:
+            # Create a dummy dataframe to train a real model
+            df = pd.DataFrame({
+                'value': [100, 200, 150, 5000],
+                'gas': [21000, 22000, 21500, 25000],
+                'gasPrice': [20, 25, 22, 30]
+            })
             # Save model
-            processor.model = Mock()
+            processor.model = AnomalyDetectorIsolationForest(df)
             processor.save_model(model_path)
 
             assert os.path.exists(model_path)
 
             # Load model
             processor.load_model(model_path)
+            assert isinstance(processor.model, AnomalyDetectorIsolationForest)
 
         finally:
             if os.path.exists(model_path):

@@ -1,5 +1,9 @@
 """
 FastAPI application for blockchain anomaly detection.
+
+This module defines a FastAPI application that provides a REST API for real-time
+blockchain transaction anomaly detection. It includes endpoints for prediction,
+model management, health checks, and streaming status.
 """
 
 import logging
@@ -57,9 +61,13 @@ app_state = {
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """
-    Application lifespan manager.
+    Application lifespan manager for handling startup and shutdown events.
 
-    Handles startup and shutdown events.
+    During startup, it initializes the stream processor and Kafka consumer.
+    During shutdown, it disconnects the Kafka consumer if it's running.
+
+    Args:
+        app (FastAPI): The FastAPI application instance.
     """
     # Startup
     logger.info("Starting Blockchain Anomaly Detection API")
@@ -126,7 +134,19 @@ Instrumentator().instrument(app).expose(app, endpoint="/api/metrics")
 # Middleware for request tracking
 @app.middleware("http")
 async def track_requests(request: Request, call_next):
-    """Track HTTP requests with Prometheus metrics."""
+    """
+    Track HTTP requests with Prometheus metrics.
+
+    This middleware records the total number of HTTP requests, their duration,
+    and the number of requests in progress.
+
+    Args:
+        request (Request): The incoming HTTP request.
+        call_next (Callable): The next middleware or endpoint in the chain.
+
+    Returns:
+        Response: The HTTP response.
+    """
     method = request.method
     path = request.url.path
 
@@ -160,6 +180,12 @@ async def health_check():
     Comprehensive health check endpoint.
 
     Returns detailed health status including system metrics.
+
+    Returns:
+        HealthCheckResponse: The health status of the service.
+
+    Raises:
+        HTTPException: If the service is unhealthy.
     """
     health_status = health_checker.check_health()
 
@@ -178,6 +204,12 @@ async def readiness_check():
     Readiness check endpoint.
 
     Indicates if the service is ready to accept traffic.
+
+    Returns:
+        dict: A dictionary indicating the readiness of the service.
+
+    Raises:
+        HTTPException: If the service is not ready.
     """
     readiness = health_checker.check_readiness()
 
@@ -196,6 +228,9 @@ async def liveness_check():
     Liveness check endpoint.
 
     Indicates if the service is alive and responsive.
+
+    Returns:
+        dict: A dictionary indicating the liveness of the service.
     """
     return health_checker.check_liveness()
 
@@ -211,10 +246,13 @@ async def predict_single(transaction: TransactionData):
     Predict if a single transaction is anomalous.
 
     Args:
-        transaction: Transaction data to analyze
+        transaction (TransactionData): Transaction data to analyze.
 
     Returns:
-        Prediction result with anomaly score
+        PredictionResponse: Prediction result with anomaly score.
+
+    Raises:
+        HTTPException: If the prediction fails.
     """
     try:
         start_time = time.time()
@@ -262,10 +300,13 @@ async def predict_batch(request: BatchTransactionRequest):
     Predict anomalies for a batch of transactions.
 
     Args:
-        request: Batch of transactions to analyze
+        request (BatchTransactionRequest): Batch of transactions to analyze.
 
     Returns:
-        Batch prediction results
+        BatchPredictionResponse: Batch prediction results.
+
+    Raises:
+        HTTPException: If the batch prediction fails.
     """
     try:
         start_time = time.time()
@@ -322,11 +363,14 @@ async def train_model(request: ModelTrainingRequest, background_tasks: Backgroun
     Train a new anomaly detection model.
 
     Args:
-        request: Training configuration
-        background_tasks: FastAPI background tasks
+        request (ModelTrainingRequest): Training configuration.
+        background_tasks (BackgroundTasks): FastAPI background tasks.
 
     Returns:
-        Training status and model information
+        ModelTrainingResponse: Training status and model information.
+
+    Raises:
+        HTTPException: If model training fails.
     """
     try:
         start_time = time.time()
@@ -375,7 +419,7 @@ async def list_models():
     List all available models.
 
     Returns:
-        List of model information
+        ModelListResponse: List of model information.
     """
     models = []
     for model_id, model_data in app_state['models'].items():
@@ -406,10 +450,13 @@ async def get_model(model_id: str):
     Get information about a specific model.
 
     Args:
-        model_id: Model identifier
+        model_id (str): Model identifier.
 
     Returns:
-        Model information
+        ModelInfo: Model information.
+
+    Raises:
+        HTTPException: If the model is not found.
     """
     if model_id not in app_state['models']:
         raise HTTPException(
@@ -440,10 +487,13 @@ async def delete_model(model_id: str):
     Delete a model.
 
     Args:
-        model_id: Model identifier
+        model_id (str): Model identifier.
 
     Returns:
-        Success message
+        SuccessResponse: Success message.
+
+    Raises:
+        HTTPException: If the model is not found.
     """
     if model_id not in app_state['models']:
         raise HTTPException(
@@ -470,11 +520,11 @@ async def get_anomalies(limit: Optional[int] = 100, severity: Optional[str] = No
     Get detected anomalies.
 
     Args:
-        limit: Maximum number of anomalies to return
-        severity: Filter by severity level
+        limit (Optional[int]): Maximum number of anomalies to return. Defaults to 100.
+        severity (Optional[str]): Filter by severity level.
 
     Returns:
-        List of detected anomalies
+        AnomalyListResponse: List of detected anomalies.
     """
     anomalies = stream_processor.get_anomalies(limit=limit)
 
@@ -513,7 +563,7 @@ async def clear_anomalies():
     Clear the anomaly buffer.
 
     Returns:
-        Success message
+        SuccessResponse: Success message.
     """
     stream_processor.clear_anomaly_buffer()
 
@@ -534,7 +584,7 @@ async def get_stream_status():
     Get streaming service status.
 
     Returns:
-        Streaming service status
+        StreamStatusResponse: Streaming service status.
     """
     stats = stream_processor.get_stats()
 
@@ -551,7 +601,12 @@ async def get_stream_status():
 # Root endpoint
 @app.get("/", tags=["Root"])
 async def root():
-    """Root endpoint with API information."""
+    """
+    Root endpoint with API information.
+
+    Returns:
+        dict: API information.
+    """
     return {
         "name": "Blockchain Anomaly Detection API",
         "version": "1.0.0",
@@ -568,7 +623,7 @@ async def metrics():
     Prometheus metrics endpoint.
 
     Returns:
-        Prometheus-formatted metrics
+        Response: Prometheus-formatted metrics.
     """
     return Response(
         content=generate_latest(),
@@ -579,7 +634,16 @@ async def metrics():
 # Exception handlers
 @app.exception_handler(HTTPException)
 async def http_exception_handler(request: Request, exc: HTTPException):
-    """Handle HTTP exceptions."""
+    """
+    Handle HTTP exceptions.
+
+    Args:
+        request (Request): The HTTP request.
+        exc (HTTPException): The HTTP exception.
+
+    Returns:
+        JSONResponse: The JSON response with error details.
+    """
     return JSONResponse(
         status_code=exc.status_code,
         content={
@@ -591,7 +655,16 @@ async def http_exception_handler(request: Request, exc: HTTPException):
 
 @app.exception_handler(Exception)
 async def general_exception_handler(request: Request, exc: Exception):
-    """Handle general exceptions."""
+    """
+    Handle general exceptions.
+
+    Args:
+        request (Request): The HTTP request.
+        exc (Exception): The exception.
+
+    Returns:
+        JSONResponse: The JSON response with error details.
+    """
     logger.error(f"Unhandled exception: {exc}", exc_info=True)
     return JSONResponse(
         status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
