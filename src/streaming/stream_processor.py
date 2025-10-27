@@ -17,6 +17,7 @@ import os
 from prometheus_client import Counter, Histogram, Gauge
 
 from src.anomaly_detection.isolation_forest import AnomalyDetectorIsolationForest
+from src.streaming.bounded_buffer import BoundedTTLBuffer
 
 logger = logging.getLogger(__name__)
 
@@ -48,6 +49,16 @@ model_score = Gauge(
     'Latest anomaly score from the model.'
 )
 
+anomaly_buffer_size = Gauge(
+    'anomaly_buffer_size',
+    'Current number of anomalies in buffer.'
+)
+
+anomaly_buffer_evictions = Counter(
+    'anomaly_buffer_evictions_total',
+    'Total number of anomalies evicted from buffer.'
+)
+
 
 class StreamProcessor:
     """
@@ -69,7 +80,9 @@ class StreamProcessor:
         self,
         model_path: Optional[str] = None,
         batch_size: int = 100,
-        contamination: float = 0.01
+        contamination: float = 0.01,
+        anomaly_buffer_max_size: int = 10000,
+        anomaly_buffer_ttl_seconds: int = 3600
     ):
         """
         Initializes the StreamProcessor.
@@ -81,13 +94,20 @@ class StreamProcessor:
                 Defaults to 100.
             contamination (float): The expected proportion of anomalies in the data.
                 Defaults to 0.01.
+            anomaly_buffer_max_size (int): Maximum size of anomaly buffer.
+                Defaults to 10000.
+            anomaly_buffer_ttl_seconds (int): Time-to-live for anomalies in seconds.
+                Defaults to 3600 (1 hour).
         """
         self.model_path = model_path
         self.batch_size = batch_size
         self.contamination = contamination
         self.model: Optional[AnomalyDetectorIsolationForest] = None
         self.transaction_buffer: List[Dict[str, Any]] = []
-        self.anomaly_buffer: List[Dict[str, Any]] = []
+        self.anomaly_buffer = BoundedTTLBuffer(
+            max_size=anomaly_buffer_max_size,
+            ttl_seconds=anomaly_buffer_ttl_seconds
+        )
 
         # Load pre-trained model if provided
         if model_path and os.path.exists(model_path):
@@ -272,6 +292,7 @@ class StreamProcessor:
                     anomalies_detected.labels(
                         severity=anomaly_record['severity']
                     ).inc()
+                    anomaly_buffer_size.set(self.anomaly_buffer.size())
 
                     # Log high-severity anomalies
                     if anomaly_record['severity'] in ['high', 'critical']:
@@ -314,28 +335,33 @@ class StreamProcessor:
             logger.error(f"Error calculating severity: {e}")
             return 'low'
 
-    def get_anomalies(self, limit: Optional[int] = None) -> List[Dict[str, Any]]:
+    def get_anomalies(
+        self,
+        limit: Optional[int] = None,
+        severity: Optional[str] = None
+    ) -> List[Dict[str, Any]]:
         """
         Gets the detected anomalies from the buffer.
 
         Args:
             limit (Optional[int]): The maximum number of anomalies to return.
                 If None, all anomalies are returned. Defaults to None.
+            severity (Optional[str]): Filter by severity level.
+                If None, returns all severities. Defaults to None.
 
         Returns:
             List[Dict[str, Any]]: A list of anomaly records.
         """
-        if limit:
-            return self.anomaly_buffer[-limit:]
-        return self.anomaly_buffer.copy()
+        if severity:
+            return self.anomaly_buffer.get_by_severity(severity, limit=limit)
+        return self.anomaly_buffer.get_all(limit=limit)
 
     def clear_anomaly_buffer(self) -> None:
         """
         Clears the anomaly buffer.
         """
-        count = len(self.anomaly_buffer)
-        self.anomaly_buffer.clear()
-        logger.info(f"Cleared {count} anomalies from buffer")
+        count = self.anomaly_buffer.clear()
+        anomaly_buffer_size.set(0)
 
     def get_stats(self) -> Dict[str, Any]:
         """
@@ -344,12 +370,17 @@ class StreamProcessor:
         Returns:
             Dict[str, Any]: A dictionary containing processing statistics.
         """
+        buffer_stats = self.anomaly_buffer.get_stats()
+        memory_stats = self.anomaly_buffer.get_memory_estimate()
+
         return {
             'buffer_size': len(self.transaction_buffer),
-            'anomalies_detected': len(self.anomaly_buffer),
+            'anomalies_detected': buffer_stats['current_size'],
             'model_loaded': self.model is not None,
             'batch_size': self.batch_size,
-            'contamination': self.contamination
+            'contamination': self.contamination,
+            'anomaly_buffer': buffer_stats,
+            'memory_usage': memory_stats
         }
 
     def flush(self) -> None:

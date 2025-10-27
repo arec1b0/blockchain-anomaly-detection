@@ -89,7 +89,17 @@ class HealthChecker:
         """
         self.start_time = datetime.utcnow()
         self.checks = {}
+        self.cache_layer = None  # Will be set by API server
+        self.stream_processor = None  # Will be set by API server
         logger.info("Health checker initialized")
+
+    def set_cache_layer(self, cache_layer):
+        """Sets the cache layer for health checks."""
+        self.cache_layer = cache_layer
+
+    def set_stream_processor(self, stream_processor):
+        """Sets the stream processor for health checks."""
+        self.stream_processor = stream_processor
 
     def check_health(self) -> Dict[str, Any]:
         """
@@ -119,6 +129,14 @@ class HealthChecker:
                 'disk': self._check_disk_health()
             }
         }
+
+        # Add cache health check if cache is enabled
+        if self.cache_layer:
+            health_status['checks']['cache'] = self._check_cache_health()
+
+        # Add stream processor health check if available
+        if self.stream_processor:
+            health_status['checks']['stream_processor'] = self._check_stream_processor_health()
 
         # Determine overall status
         if any(check['status'] == 'unhealthy' for check in health_status['checks'].values()):
@@ -278,6 +296,104 @@ class HealthChecker:
             return {
                 'status': 'unknown',
                 'message': f'Error checking disk health: {str(e)}'
+            }
+
+    def _check_cache_health(self) -> Dict[str, Any]:
+        """
+        Checks the Redis cache health.
+
+        Returns:
+            Dict[str, Any]: A dictionary containing the cache health status.
+        """
+        try:
+            if not self.cache_layer:
+                return {
+                    'status': 'disabled',
+                    'message': 'Cache layer not initialized'
+                }
+
+            # Check Redis connection
+            redis_client = self.cache_layer.redis_client
+            is_healthy = redis_client.health_check()
+
+            if not is_healthy:
+                return {
+                    'status': 'unhealthy',
+                    'message': 'Redis connection failed'
+                }
+
+            # Get cache stats
+            stats = self.cache_layer.get_cache_stats()
+            redis_stats = stats.get('redis', {})
+
+            # Check hit rate (target is 40%+)
+            hit_rate = redis_stats.get('hit_rate', 0)
+            status = 'healthy'
+            if hit_rate < 20:
+                status = 'degraded'
+                message = f'Cache hit rate low: {hit_rate}%'
+            else:
+                message = f'Cache hit rate: {hit_rate}%'
+
+            return {
+                'status': status,
+                'hit_rate': hit_rate,
+                'connected': redis_stats.get('connected', False),
+                'total_hits': redis_stats.get('total_hits', 0),
+                'total_misses': redis_stats.get('total_misses', 0),
+                'message': message
+            }
+
+        except Exception as e:
+            logger.error(f"Error checking cache health: {e}")
+            return {
+                'status': 'unknown',
+                'message': f'Error checking cache health: {str(e)}'
+            }
+
+    def _check_stream_processor_health(self) -> Dict[str, Any]:
+        """
+        Checks the stream processor health.
+
+        Returns:
+            Dict[str, Any]: A dictionary containing the stream processor health status.
+        """
+        try:
+            if not self.stream_processor:
+                return {
+                    'status': 'disabled',
+                    'message': 'Stream processor not initialized'
+                }
+
+            # Get processor stats
+            stats = self.stream_processor.get_stats()
+
+            # Check anomaly buffer utilization
+            buffer_stats = stats.get('anomaly_buffer', {})
+            utilization = buffer_stats.get('utilization', 0)
+
+            status = 'healthy'
+            if utilization > 0.9:
+                status = 'degraded'
+                message = f'Anomaly buffer nearly full: {utilization*100:.1f}%'
+            else:
+                message = f'Anomaly buffer utilization: {utilization*100:.1f}%'
+
+            return {
+                'status': status,
+                'model_loaded': stats.get('model_loaded', False),
+                'buffer_size': stats.get('buffer_size', 0),
+                'anomalies_detected': stats.get('anomalies_detected', 0),
+                'buffer_utilization': utilization,
+                'memory_usage_mb': stats.get('memory_usage', {}).get('current_mb', 0),
+                'message': message
+            }
+
+        except Exception as e:
+            logger.error(f"Error checking stream processor health: {e}")
+            return {
+                'status': 'unknown',
+                'message': f'Error checking stream processor health: {str(e)}'
             }
 
 

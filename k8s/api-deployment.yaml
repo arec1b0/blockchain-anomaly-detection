@@ -1,0 +1,249 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: anomaly-detection-api
+  namespace: blockchain-anomaly-detection
+  labels:
+    app: anomaly-detection
+    component: api
+    version: v1
+spec:
+  replicas: 3
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
+  selector:
+    matchLabels:
+      app: anomaly-detection
+      component: api
+  template:
+    metadata:
+      labels:
+        app: anomaly-detection
+        component: api
+        version: v1
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "8000"
+        prometheus.io/path: "/api/metrics"
+    spec:
+      serviceAccountName: anomaly-detection-api
+
+      # Init container to wait for Redis
+      initContainers:
+      - name: wait-for-redis
+        image: busybox:1.35
+        command:
+        - 'sh'
+        - '-c'
+        - |
+          until nc -z redis-service 6379; do
+            echo "Waiting for Redis...";
+            sleep 2;
+          done;
+          echo "Redis is ready!";
+
+      containers:
+      - name: api
+        image: anomaly-detection-api:latest
+        imagePullPolicy: IfNotPresent
+
+        ports:
+        - name: http
+          containerPort: 8000
+          protocol: TCP
+
+        env:
+        - name: LOG_LEVEL
+          valueFrom:
+            configMapKeyRef:
+              name: anomaly-detection-config
+              key: log_level
+
+        - name: MODEL_PATH
+          value: "/app/models/default_model.pkl"
+
+        - name: BATCH_SIZE
+          valueFrom:
+            configMapKeyRef:
+              name: anomaly-detection-config
+              key: batch_size
+
+        - name: CONTAMINATION
+          valueFrom:
+            configMapKeyRef:
+              name: anomaly-detection-config
+              key: contamination
+
+        # Anomaly buffer configuration
+        - name: ANOMALY_BUFFER_MAX_SIZE
+          valueFrom:
+            configMapKeyRef:
+              name: anomaly-detection-config
+              key: anomaly_buffer_max_size
+
+        - name: ANOMALY_BUFFER_TTL_SECONDS
+          valueFrom:
+            configMapKeyRef:
+              name: anomaly-detection-config
+              key: anomaly_buffer_ttl_seconds
+
+        # Redis configuration
+        - name: REDIS_ENABLED
+          value: "true"
+
+        - name: REDIS_HOST
+          value: "redis-service"
+
+        - name: REDIS_PORT
+          value: "6379"
+
+        - name: REDIS_DB
+          value: "0"
+
+        - name: REDIS_MAX_CONNECTIONS
+          value: "50"
+
+        - name: REDIS_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: redis-secret
+              key: password
+              optional: true
+
+        # Kafka configuration
+        - name: KAFKA_ENABLED
+          valueFrom:
+            configMapKeyRef:
+              name: anomaly-detection-config
+              key: kafka_enabled
+
+        - name: KAFKA_BOOTSTRAP_SERVERS
+          valueFrom:
+            configMapKeyRef:
+              name: anomaly-detection-config
+              key: kafka_bootstrap_servers
+
+        - name: KAFKA_TOPIC
+          valueFrom:
+            configMapKeyRef:
+              name: anomaly-detection-config
+              key: kafka_topic
+
+        - name: KAFKA_GROUP_ID
+          value: "anomaly-detection-api-group"
+
+        # Etherscan API (if needed)
+        - name: ETHERSCAN_API_KEY
+          valueFrom:
+            secretKeyRef:
+              name: etherscan-secret
+              key: api_key
+              optional: true
+
+        # Sentry (optional)
+        - name: SENTRY_ENABLED
+          value: "false"
+
+        - name: SENTRY_DSN
+          valueFrom:
+            secretKeyRef:
+              name: sentry-secret
+              key: dsn
+              optional: true
+
+        # Probes
+        livenessProbe:
+          httpGet:
+            path: /health/live
+            port: http
+          initialDelaySeconds: 30
+          periodSeconds: 10
+          timeoutSeconds: 5
+          failureThreshold: 3
+          successThreshold: 1
+
+        readinessProbe:
+          httpGet:
+            path: /health/ready
+            port: http
+          initialDelaySeconds: 10
+          periodSeconds: 5
+          timeoutSeconds: 3
+          failureThreshold: 3
+          successThreshold: 1
+
+        # Startup probe for initial model loading
+        startupProbe:
+          httpGet:
+            path: /health/live
+            port: http
+          initialDelaySeconds: 0
+          periodSeconds: 5
+          timeoutSeconds: 3
+          failureThreshold: 12
+          successThreshold: 1
+
+        # Resource limits
+        resources:
+          requests:
+            memory: "512Mi"
+            cpu: "250m"
+          limits:
+            memory: "2Gi"
+            cpu: "1000m"
+
+        # Volume mounts
+        volumeMounts:
+        - name: models
+          mountPath: /app/models
+          readOnly: true
+        - name: logs
+          mountPath: /app/logs
+
+        # Security context
+        securityContext:
+          runAsNonRoot: true
+          runAsUser: 1000
+          allowPrivilegeEscalation: false
+          readOnlyRootFilesystem: false
+          capabilities:
+            drop:
+            - ALL
+
+      # Volumes
+      volumes:
+      - name: models
+        persistentVolumeClaim:
+          claimName: anomaly-detection-models-pvc
+      - name: logs
+        emptyDir: {}
+
+      # Pod scheduling
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+          - weight: 100
+            podAffinityTerm:
+              labelSelector:
+                matchExpressions:
+                - key: component
+                  operator: In
+                  values:
+                  - api
+              topologyKey: kubernetes.io/hostname
+
+      # Graceful termination
+      terminationGracePeriodSeconds: 30
+
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: anomaly-detection-api
+  namespace: blockchain-anomaly-detection
+  labels:
+    app: anomaly-detection
+    component: api

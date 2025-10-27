@@ -1,0 +1,254 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: anomaly-detection-consumer
+  namespace: blockchain-anomaly-detection
+  labels:
+    app: anomaly-detection
+    component: consumer
+    version: v1
+spec:
+  replicas: 2
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
+  selector:
+    matchLabels:
+      app: anomaly-detection
+      component: consumer
+  template:
+    metadata:
+      labels:
+        app: anomaly-detection
+        component: consumer
+        version: v1
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "9090"
+        prometheus.io/path: "/metrics"
+    spec:
+      serviceAccountName: anomaly-detection-consumer
+
+      # Init containers to wait for dependencies
+      initContainers:
+      - name: wait-for-redis
+        image: busybox:1.35
+        command:
+        - 'sh'
+        - '-c'
+        - |
+          until nc -z redis-service 6379; do
+            echo "Waiting for Redis...";
+            sleep 2;
+          done;
+          echo "Redis is ready!";
+
+      - name: wait-for-kafka
+        image: busybox:1.35
+        command:
+        - 'sh'
+        - '-c'
+        - |
+          KAFKA_HOST=$(echo $KAFKA_BOOTSTRAP_SERVERS | cut -d':' -f1)
+          KAFKA_PORT=$(echo $KAFKA_BOOTSTRAP_SERVERS | cut -d':' -f2)
+          until nc -z $KAFKA_HOST $KAFKA_PORT; do
+            echo "Waiting for Kafka...";
+            sleep 2;
+          done;
+          echo "Kafka is ready!";
+        env:
+        - name: KAFKA_BOOTSTRAP_SERVERS
+          valueFrom:
+            configMapKeyRef:
+              name: anomaly-detection-config
+              key: kafka_bootstrap_servers
+
+      containers:
+      - name: consumer
+        image: anomaly-detection-consumer:latest
+        imagePullPolicy: IfNotPresent
+
+        ports:
+        - name: metrics
+          containerPort: 9090
+          protocol: TCP
+
+        env:
+        - name: LOG_LEVEL
+          valueFrom:
+            configMapKeyRef:
+              name: anomaly-detection-config
+              key: log_level
+
+        - name: MODEL_PATH
+          value: "/app/models/default_model.pkl"
+
+        - name: BATCH_SIZE
+          valueFrom:
+            configMapKeyRef:
+              name: anomaly-detection-config
+              key: batch_size
+
+        - name: CONTAMINATION
+          valueFrom:
+            configMapKeyRef:
+              name: anomaly-detection-config
+              key: contamination
+
+        # Anomaly buffer configuration
+        - name: ANOMALY_BUFFER_MAX_SIZE
+          valueFrom:
+            configMapKeyRef:
+              name: anomaly-detection-config
+              key: anomaly_buffer_max_size
+
+        - name: ANOMALY_BUFFER_TTL_SECONDS
+          valueFrom:
+            configMapKeyRef:
+              name: anomaly-detection-config
+              key: anomaly_buffer_ttl_seconds
+
+        # Redis configuration
+        - name: REDIS_ENABLED
+          value: "true"
+
+        - name: REDIS_HOST
+          value: "redis-service"
+
+        - name: REDIS_PORT
+          value: "6379"
+
+        - name: REDIS_DB
+          value: "0"
+
+        - name: REDIS_MAX_CONNECTIONS
+          value: "50"
+
+        - name: REDIS_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: redis-secret
+              key: password
+              optional: true
+
+        # Kafka consumer configuration
+        - name: KAFKA_ENABLED
+          value: "true"
+
+        - name: KAFKA_BOOTSTRAP_SERVERS
+          valueFrom:
+            configMapKeyRef:
+              name: anomaly-detection-config
+              key: kafka_bootstrap_servers
+
+        - name: KAFKA_TOPIC
+          valueFrom:
+            configMapKeyRef:
+              name: anomaly-detection-config
+              key: kafka_topic
+
+        - name: KAFKA_GROUP_ID
+          value: "anomaly-detection-consumer-group"
+
+        # Consumer-specific configuration
+        - name: KAFKA_NUM_WORKER_THREADS
+          value: "4"
+
+        - name: KAFKA_MAX_POLL_RECORDS
+          value: "500"
+
+        - name: KAFKA_SESSION_TIMEOUT_MS
+          value: "30000"
+
+        - name: KAFKA_MAX_POLL_INTERVAL_MS
+          value: "300000"
+
+        # Health check endpoint (if consumer exposes one)
+        livenessProbe:
+          exec:
+            command:
+            - /bin/sh
+            - -c
+            - ps aux | grep -v grep | grep python || exit 1
+          initialDelaySeconds: 30
+          periodSeconds: 30
+          timeoutSeconds: 5
+          failureThreshold: 3
+          successThreshold: 1
+
+        # Startup probe
+        startupProbe:
+          exec:
+            command:
+            - /bin/sh
+            - -c
+            - ps aux | grep -v grep | grep python || exit 1
+          initialDelaySeconds: 0
+          periodSeconds: 10
+          timeoutSeconds: 5
+          failureThreshold: 12
+          successThreshold: 1
+
+        # Resource limits
+        resources:
+          requests:
+            memory: "1Gi"
+            cpu: "500m"
+          limits:
+            memory: "4Gi"
+            cpu: "2000m"
+
+        # Volume mounts
+        volumeMounts:
+        - name: models
+          mountPath: /app/models
+          readOnly: true
+        - name: logs
+          mountPath: /app/logs
+
+        # Security context
+        securityContext:
+          runAsNonRoot: true
+          runAsUser: 1000
+          allowPrivilegeEscalation: false
+          readOnlyRootFilesystem: false
+          capabilities:
+            drop:
+            - ALL
+
+      # Volumes
+      volumes:
+      - name: models
+        persistentVolumeClaim:
+          claimName: anomaly-detection-models-pvc
+      - name: logs
+        emptyDir: {}
+
+      # Pod scheduling - distribute across nodes
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+          - weight: 100
+            podAffinityTerm:
+              labelSelector:
+                matchExpressions:
+                - key: component
+                  operator: In
+                  values:
+                  - consumer
+              topologyKey: kubernetes.io/hostname
+
+      # Graceful termination - important for Kafka offset commits
+      terminationGracePeriodSeconds: 60
+
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: anomaly-detection-consumer
+  namespace: blockchain-anomaly-detection
+  labels:
+    app: anomaly-detection
+    component: consumer

@@ -44,6 +44,7 @@ from src.api_server.monitoring import (
 )
 from src.streaming.stream_processor import StreamProcessor
 from src.streaming.kafka_consumer import KafkaConsumerService
+from src.cache import get_cache_layer, get_redis_client
 from src.utils.logger import get_logger
 
 logger = get_logger(__name__)
@@ -51,10 +52,12 @@ logger = get_logger(__name__)
 # Global state
 stream_processor: Optional[StreamProcessor] = None
 kafka_consumer: Optional[KafkaConsumerService] = None
+cache_layer = None
 app_state = {
     'models': {},
     'active_model_id': None,
-    'streaming_enabled': False
+    'streaming_enabled': False,
+    'cache_enabled': False
 }
 
 
@@ -72,15 +75,41 @@ async def lifespan(app: FastAPI):
     # Startup
     logger.info("Starting Blockchain Anomaly Detection API")
 
+    # Initialize Redis cache if enabled
+    global cache_layer
+    if os.getenv('REDIS_ENABLED', 'false').lower() == 'true':
+        try:
+            redis_client = get_redis_client(
+                host=os.getenv('REDIS_HOST', 'localhost'),
+                port=int(os.getenv('REDIS_PORT', 6379)),
+                db=int(os.getenv('REDIS_DB', 0)),
+                password=os.getenv('REDIS_PASSWORD'),
+                max_connections=int(os.getenv('REDIS_MAX_CONNECTIONS', 50))
+            )
+            cache_layer = get_cache_layer(redis_client=redis_client)
+            app_state['cache_enabled'] = True
+            logger.info("Redis cache layer initialized")
+        except Exception as e:
+            logger.warning(f"Failed to initialize Redis cache: {e}")
+            cache_layer = None
+            app_state['cache_enabled'] = False
+
     # Initialize stream processor
     global stream_processor
     model_path = os.getenv('MODEL_PATH', './models/default_model.pkl')
     stream_processor = StreamProcessor(
         model_path=model_path if os.path.exists(model_path) else None,
         batch_size=int(os.getenv('BATCH_SIZE', 100)),
-        contamination=float(os.getenv('CONTAMINATION', 0.01))
+        contamination=float(os.getenv('CONTAMINATION', 0.01)),
+        anomaly_buffer_max_size=int(os.getenv('ANOMALY_BUFFER_MAX_SIZE', 10000)),
+        anomaly_buffer_ttl_seconds=int(os.getenv('ANOMALY_BUFFER_TTL_SECONDS', 3600))
     )
     logger.info("Stream processor initialized")
+
+    # Set health checker dependencies
+    health_checker.set_stream_processor(stream_processor)
+    if cache_layer:
+        health_checker.set_cache_layer(cache_layer)
 
     # Initialize Kafka consumer if enabled
     if os.getenv('KAFKA_ENABLED', 'false').lower() == 'true':

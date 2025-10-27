@@ -15,6 +15,9 @@ docker==6.1.2
 kafka-python==2.0.2
 confluent-kafka==2.3.0
 
+# Redis for distributed caching
+redis==5.0.1
+
 # FastAPI and API dependencies
 fastapi==0.104.1
 uvicorn[standard]==0.24.0
