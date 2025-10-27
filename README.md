@@ -356,6 +356,30 @@ The project includes a comprehensive CI/CD pipeline using GitHub Actions:
 
 The pipeline runs on every push and pull request. See [.github/workflows/ci-cd.yml](.github/workflows/ci-cd.yml) for details.
 
+## Performance Optimization
+
+This project includes a comprehensive optimization plan designed to improve performance, scalability, and maintainability:
+
+- **[Comprehensive Optimization Plan](docs/OPTIMIZATION_PLAN.md)**: Detailed 8-week roadmap covering:
+  - Performance optimization (83% latency reduction)
+  - Scalability enhancements (10x throughput improvement)
+  - Code quality improvements (100% type hints)
+  - Infrastructure optimization (73% Docker image reduction)
+
+- **[Quick Start Guide](docs/OPTIMIZATION_QUICK_START.md)**: Quick reference for implementing key optimizations
+
+### Key Optimization Areas
+
+1. **Stream Processing**: Vectorized batching for 83% latency reduction
+2. **Kafka Consumer**: Thread pool implementation for 10x throughput
+3. **API Endpoints**: Async processing for 85% latency improvement
+4. **Model Management**: Persistence and lazy loading for instant cold starts
+5. **Feature Engineering**: 30+ features for 7% accuracy improvement
+6. **Scalability**: Horizontal scaling with distributed consumers
+7. **Infrastructure**: Kubernetes-ready deployment with auto-scaling
+
+See the [optimization plan](docs/OPTIMIZATION_PLAN.md) for detailed implementation guides, metrics, and success criteria.
+
 ## Contribution
 
 Contributions are welcome! If you'd like to contribute to this project, please follow these steps:
