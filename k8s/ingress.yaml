@@ -1,0 +1,149 @@
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: anomaly-detection-ingress
+  namespace: blockchain-anomaly-detection
+  labels:
+    app: anomaly-detection
+  annotations:
+    # NGINX Ingress Controller annotations
+    nginx.ingress.kubernetes.io/rewrite-target: /
+    nginx.ingress.kubernetes.io/ssl-redirect: "true"
+    nginx.ingress.kubernetes.io/force-ssl-redirect: "true"
+
+    # Rate limiting
+    nginx.ingress.kubernetes.io/limit-rps: "100"
+    nginx.ingress.kubernetes.io/limit-connections: "50"
+
+    # Timeouts
+    nginx.ingress.kubernetes.io/proxy-connect-timeout: "60"
+    nginx.ingress.kubernetes.io/proxy-send-timeout: "60"
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "60"
+
+    # Load balancing
+    nginx.ingress.kubernetes.io/load-balance: "ewma"  # Exponentially Weighted Moving Average
+    nginx.ingress.kubernetes.io/upstream-hash-by: "$http_x_forwarded_for"
+
+    # CORS (if needed)
+    nginx.ingress.kubernetes.io/enable-cors: "true"
+    nginx.ingress.kubernetes.io/cors-allow-methods: "GET, POST, PUT, DELETE, OPTIONS"
+    nginx.ingress.kubernetes.io/cors-allow-origin: "*"  # RESTRICT IN PRODUCTION
+    nginx.ingress.kubernetes.io/cors-allow-credentials: "true"
+
+    # Health checks
+    nginx.ingress.kubernetes.io/health-check-path: "/health/ready"
+    nginx.ingress.kubernetes.io/health-check-interval: "10s"
+
+    # Client body size
+    nginx.ingress.kubernetes.io/proxy-body-size: "10m"
+
+    # WebSocket support (if needed)
+    nginx.ingress.kubernetes.io/websocket-services: "anomaly-detection-api-service"
+
+    # Cert-manager annotation for automatic TLS certificate
+    cert-manager.io/cluster-issuer: "letsencrypt-prod"  # Configure cert-manager first
+
+spec:
+  ingressClassName: nginx
+
+  # TLS configuration
+  tls:
+  - hosts:
+    - anomaly-detection.example.com  # REPLACE WITH YOUR DOMAIN
+    secretName: anomaly-detection-tls
+
+  rules:
+  - host: anomaly-detection.example.com  # REPLACE WITH YOUR DOMAIN
+    http:
+      paths:
+      # API endpoints
+      - path: /api
+        pathType: Prefix
+        backend:
+          service:
+            name: anomaly-detection-api-service
+            port:
+              number: 80
+
+      # Health check endpoints
+      - path: /health
+        pathType: Prefix
+        backend:
+          service:
+            name: anomaly-detection-api-service
+            port:
+              number: 80
+
+      # Metrics endpoints (consider restricting access)
+      - path: /metrics
+        pathType: Prefix
+        backend:
+          service:
+            name: anomaly-detection-api-service
+            port:
+              number: 80
+
+---
+# Alternative: Simple Ingress without advanced features
+# Uncomment if you prefer a simpler configuration
+# apiVersion: networking.k8s.io/v1
+# kind: Ingress
+# metadata:
+#   name: anomaly-detection-ingress-simple
+#   namespace: blockchain-anomaly-detection
+#   labels:
+#     app: anomaly-detection
+# spec:
+#   ingressClassName: nginx
+#   rules:
+#   - host: anomaly-detection.example.com
+#     http:
+#       paths:
+#       - path: /
+#         pathType: Prefix
+#         backend:
+#           service:
+#             name: anomaly-detection-api-service
+#             port:
+#               number: 80
+
+---
+# NetworkPolicy for Ingress traffic control
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: api-ingress-policy
+  namespace: blockchain-anomaly-detection
+spec:
+  podSelector:
+    matchLabels:
+      app: anomaly-detection
+      component: api
+  policyTypes:
+  - Ingress
+  - Egress
+  ingress:
+  - from:
+    - namespaceSelector:
+        matchLabels:
+          name: ingress-nginx
+    ports:
+    - protocol: TCP
+      port: 8000
+  egress:
+  - to:
+    - podSelector:
+        matchLabels:
+          app: redis
+    ports:
+    - protocol: TCP
+      port: 6379
+  - to:
+    - namespaceSelector: {}
+    ports:
+    - protocol: TCP
+      port: 9092  # Kafka
+    - protocol: TCP
+      port: 53   # DNS
+    - protocol: UDP
+      port: 53   # DNS

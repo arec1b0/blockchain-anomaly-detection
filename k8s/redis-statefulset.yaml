@@ -1,0 +1,243 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: blockchain-anomaly-detection
+
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: redis
+  namespace: blockchain-anomaly-detection
+  labels:
+    app: redis
+spec:
+  serviceName: redis-service
+  replicas: 1  # Single instance for simplicity; use Redis Sentinel/Cluster for HA
+  selector:
+    matchLabels:
+      app: redis
+  template:
+    metadata:
+      labels:
+        app: redis
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "9121"
+    spec:
+      serviceAccountName: redis-sa
+
+      # Security context
+      securityContext:
+        fsGroup: 1000
+        runAsUser: 1000
+        runAsNonRoot: true
+
+      containers:
+      # Redis container
+      - name: redis
+        image: redis:7.2-alpine
+        imagePullPolicy: IfNotPresent
+
+        ports:
+        - name: redis
+          containerPort: 6379
+          protocol: TCP
+
+        # Command with authentication if password is set
+        command:
+        - redis-server
+        - /etc/redis/redis.conf
+        # Uncomment below if using password
+        # - --requirepass
+        # - $(REDIS_PASSWORD)
+
+        env:
+        - name: REDIS_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: redis-secret
+              key: password
+              optional: true
+
+        # Probes
+        livenessProbe:
+          tcpSocket:
+            port: redis
+          initialDelaySeconds: 30
+          periodSeconds: 10
+          timeoutSeconds: 5
+          failureThreshold: 3
+
+        readinessProbe:
+          exec:
+            command:
+            - redis-cli
+            - ping
+          initialDelaySeconds: 10
+          periodSeconds: 5
+          timeoutSeconds: 3
+          failureThreshold: 3
+
+        # Resources
+        resources:
+          requests:
+            memory: "512Mi"
+            cpu: "250m"
+          limits:
+            memory: "2Gi"
+            cpu: "1000m"
+
+        # Volume mounts
+        volumeMounts:
+        - name: redis-data
+          mountPath: /data
+        - name: redis-config
+          mountPath: /etc/redis
+          readOnly: true
+
+        # Security
+        securityContext:
+          allowPrivilegeEscalation: false
+          capabilities:
+            drop:
+            - ALL
+
+      # Redis Exporter for Prometheus (optional)
+      - name: redis-exporter
+        image: oliver006/redis_exporter:v1.55.0-alpine
+        imagePullPolicy: IfNotPresent
+
+        ports:
+        - name: metrics
+          containerPort: 9121
+          protocol: TCP
+
+        env:
+        - name: REDIS_ADDR
+          value: "localhost:6379"
+        - name: REDIS_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: redis-secret
+              key: password
+              optional: true
+
+        resources:
+          requests:
+            memory: "64Mi"
+            cpu: "50m"
+          limits:
+            memory: "128Mi"
+            cpu: "100m"
+
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: metrics
+          initialDelaySeconds: 15
+          periodSeconds: 10
+
+        securityContext:
+          allowPrivilegeEscalation: false
+          capabilities:
+            drop:
+            - ALL
+
+      # Volumes
+      volumes:
+      - name: redis-config
+        configMap:
+          name: redis-config
+
+      # Pod scheduling
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+          - weight: 100
+            podAffinityTerm:
+              labelSelector:
+                matchExpressions:
+                - key: app
+                  operator: In
+                  values:
+                  - redis
+              topologyKey: kubernetes.io/hostname
+
+  # Volume claim templates
+  volumeClaimTemplates:
+  - metadata:
+      name: redis-data
+      labels:
+        app: redis
+    spec:
+      accessModes: [ "ReadWriteOnce" ]
+      storageClassName: standard  # Adjust based on your cluster
+      resources:
+        requests:
+          storage: 10Gi
+
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: redis-sa
+  namespace: blockchain-anomaly-detection
+  labels:
+    app: redis
+
+---
+# PodDisruptionBudget for Redis
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: redis-pdb
+  namespace: blockchain-anomaly-detection
+  labels:
+    app: redis
+spec:
+  maxUnavailable: 0
+  selector:
+    matchLabels:
+      app: redis
+
+---
+# NetworkPolicy for Redis
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: redis-network-policy
+  namespace: blockchain-anomaly-detection
+spec:
+  podSelector:
+    matchLabels:
+      app: redis
+  policyTypes:
+  - Ingress
+  ingress:
+  # Allow from API pods
+  - from:
+    - podSelector:
+        matchLabels:
+          app: anomaly-detection
+          component: api
+    ports:
+    - protocol: TCP
+      port: 6379
+  # Allow from Consumer pods
+  - from:
+    - podSelector:
+        matchLabels:
+          app: anomaly-detection
+          component: consumer
+    ports:
+    - protocol: TCP
+      port: 6379
+  # Allow metrics scraping from Prometheus
+  - from:
+    - namespaceSelector:
+        matchLabels:
+          name: monitoring
+    ports:
+    - protocol: TCP
+      port: 9121
