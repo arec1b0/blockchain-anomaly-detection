@@ -1,0 +1,288 @@
+# Prometheus Helm Chart Values
+# For use with kube-prometheus-stack
+# helm install prometheus prometheus-community/kube-prometheus-stack -f prometheus-values.yaml
+
+# Prometheus Operator configuration
+prometheus:
+  prometheusSpec:
+    # Retention period
+    retention: 30d
+    retentionSize: "100GB"
+
+    # Storage
+    storageSpec:
+      volumeClaimTemplate:
+        spec:
+          accessModes: ["ReadWriteOnce"]
+          resources:
+            requests:
+              storage: 100Gi
+          storageClassName: ssd-storage
+
+    # Resources
+    resources:
+      requests:
+        cpu: 1000m
+        memory: 4Gi
+      limits:
+        cpu: 2000m
+        memory: 8Gi
+
+    # Service monitors
+    serviceMonitorSelectorNilUsesHelmValues: false
+    podMonitorSelectorNilUsesHelmValues: false
+
+    # Additional scrape configs
+    additionalScrapeConfigs:
+      # Scrape API pods
+      - job_name: 'api-pods'
+        kubernetes_sd_configs:
+          - role: pod
+            namespaces:
+              names:
+                - blockchain-anomaly-prod
+        relabel_configs:
+          - source_labels: [__meta_kubernetes_pod_label_app]
+            action: keep
+            regex: api
+          - source_labels: [__meta_kubernetes_pod_annotation_prometheus_io_scrape]
+            action: keep
+            regex: true
+          - source_labels: [__meta_kubernetes_pod_annotation_prometheus_io_path]
+            action: replace
+            target_label: __metrics_path__
+            regex: (.+)
+          - source_labels: [__address__, __meta_kubernetes_pod_annotation_prometheus_io_port]
+            action: replace
+            regex: ([^:]+)(?::\d+)?;(\d+)
+            replacement: $1:$2
+            target_label: __address__
+
+      # Scrape consumer pods
+      - job_name: 'consumer-pods'
+        kubernetes_sd_configs:
+          - role: pod
+            namespaces:
+              names:
+                - blockchain-anomaly-prod
+        relabel_configs:
+          - source_labels: [__meta_kubernetes_pod_label_app]
+            action: keep
+            regex: consumer
+
+      # Scrape PostgreSQL exporter
+      - job_name: 'postgresql'
+        static_configs:
+          - targets: ['postgresql-exporter:9187']
+
+      # Scrape Redis exporter
+      - job_name: 'redis'
+        static_configs:
+          - targets: ['redis-exporter:9121']
+
+    # Alerting rules
+    ruleSelector: {}
+    ruleNamespaceSelector: {}
+
+# Grafana configuration
+grafana:
+  enabled: true
+
+  # Admin credentials (change in production!)
+  adminPassword: admin  # CHANGE THIS IN PRODUCTION
+
+  # Persistence
+  persistence:
+    enabled: true
+    size: 10Gi
+    storageClassName: ssd-storage
+
+  # Resources
+  resources:
+    requests:
+      cpu: 250m
+      memory: 512Mi
+    limits:
+      cpu: 500m
+      memory: 1Gi
+
+  # Ingress
+  ingress:
+    enabled: true
+    ingressClassName: nginx
+    annotations:
+      cert-manager.io/cluster-issuer: letsencrypt-prod
+      nginx.ingress.kubernetes.io/ssl-redirect: "true"
+    hosts:
+      - grafana.blockchain-anomaly.example.com
+    tls:
+      - secretName: grafana-tls
+        hosts:
+          - grafana.blockchain-anomaly.example.com
+
+  # Data sources
+  datasources:
+    datasources.yaml:
+      apiVersion: 1
+      datasources:
+        # Prometheus
+        - name: Prometheus
+          type: prometheus
+          url: http://prometheus-kube-prometheus-prometheus:9090
+          access: proxy
+          isDefault: true
+          jsonData:
+            timeInterval: 30s
+
+        # Loki (if enabled)
+        - name: Loki
+          type: loki
+          url: http://loki:3100
+          access: proxy
+
+  # Dashboard providers
+  dashboardProviders:
+    dashboardproviders.yaml:
+      apiVersion: 1
+      providers:
+        - name: 'default'
+          orgId: 1
+          folder: ''
+          type: file
+          disableDeletion: false
+          editable: true
+          options:
+            path: /var/lib/grafana/dashboards/default
+
+  # Pre-configured dashboards
+  dashboards:
+    default:
+      # Kubernetes cluster monitoring
+      kubernetes-cluster:
+        gnetId: 7249
+        revision: 1
+        datasource: Prometheus
+
+      # Node exporter
+      node-exporter:
+        gnetId: 1860
+        revision: 27
+        datasource: Prometheus
+
+      # PostgreSQL
+      postgresql:
+        gnetId: 9628
+        revision: 7
+        datasource: Prometheus
+
+      # Redis
+      redis:
+        gnetId: 763
+        revision: 5
+        datasource: Prometheus
+
+      # Custom blockchain anomaly detection dashboard
+      blockchain-anomaly:
+        file: dashboards/blockchain-anomaly-dashboard.json
+
+  # Plugins
+  plugins:
+    - grafana-piechart-panel
+    - grafana-clock-panel
+
+# Alert Manager configuration
+alertmanager:
+  alertmanagerSpec:
+    # Storage
+    storage:
+      volumeClaimTemplate:
+        spec:
+          accessModes: ["ReadWriteOnce"]
+          resources:
+            requests:
+              storage: 10Gi
+          storageClassName: ssd-storage
+
+    # Resources
+    resources:
+      requests:
+        cpu: 100m
+        memory: 256Mi
+      limits:
+        cpu: 200m
+        memory: 512Mi
+
+  # Alert manager configuration
+  config:
+    global:
+      resolve_timeout: 5m
+      smtp_smarthost: 'smtp.gmail.com:587'
+      smtp_from: 'alerts@blockchain-anomaly.example.com'
+      smtp_auth_username: 'alerts@blockchain-anomaly.example.com'
+      smtp_auth_password: 'CHANGE_ME'
+      smtp_require_tls: true
+
+    route:
+      group_by: ['alertname', 'cluster', 'service']
+      group_wait: 10s
+      group_interval: 10s
+      repeat_interval: 12h
+      receiver: 'default'
+      routes:
+        # Critical alerts
+        - match:
+            severity: critical
+          receiver: 'critical'
+          continue: true
+
+        # Warning alerts
+        - match:
+            severity: warning
+          receiver: 'warning'
+
+    receivers:
+      # Default receiver
+      - name: 'default'
+        email_configs:
+          - to: 'team@blockchain-anomaly.example.com'
+            send_resolved: true
+
+      # Critical alerts (email + Slack)
+      - name: 'critical'
+        email_configs:
+          - to: 'oncall@blockchain-anomaly.example.com'
+            send_resolved: true
+        slack_configs:
+          - api_url: 'https://hooks.slack.com/services/YOUR/SLACK/WEBHOOK'
+            channel: '#alerts-critical'
+            title: '{{ .GroupLabels.alertname }}'
+            text: '{{ range .Alerts }}{{ .Annotations.summary }}\n{{ end }}'
+            send_resolved: true
+
+      # Warning alerts
+      - name: 'warning'
+        email_configs:
+          - to: 'team@blockchain-anomaly.example.com'
+            send_resolved: true
+
+# Prometheus Node Exporter
+prometheus-node-exporter:
+  enabled: true
+  resources:
+    requests:
+      cpu: 100m
+      memory: 64Mi
+    limits:
+      cpu: 200m
+      memory: 128Mi
+
+# Kube State Metrics
+kube-state-metrics:
+  enabled: true
+  resources:
+    requests:
+      cpu: 10m
+      memory: 64Mi
+    limits:
+      cpu: 100m
+      memory: 128Mi

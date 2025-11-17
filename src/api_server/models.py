@@ -284,3 +284,267 @@ class SuccessResponse(BaseModel):
     success: bool
     message: str
     data: Optional[Dict[str, Any]] = None
+
+
+# ============================================================================
+# Authentication Models (Phase 1)
+# ============================================================================
+
+class RegisterRequest(BaseModel):
+    """
+    Represents a user registration request.
+
+    Attributes:
+        email (str): User email address (must be valid email)
+        password (str): User password (min 8 characters)
+        confirm_password (str): Password confirmation
+    """
+    email: str = Field(..., description="User email address", min_length=3)
+    password: str = Field(..., description="User password", min_length=8)
+    confirm_password: str = Field(..., description="Password confirmation")
+
+    @field_validator('email')
+    @classmethod
+    def validate_email(cls, v):
+        """Validate email format."""
+        import re
+        email_regex = r'^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$'
+        if not re.match(email_regex, v):
+            raise ValueError('Invalid email format')
+        return v.lower()
+
+    @field_validator('confirm_password')
+    @classmethod
+    def passwords_match(cls, v, info):
+        """Validate that passwords match."""
+        if 'password' in info.data and v != info.data['password']:
+            raise ValueError('Passwords do not match')
+        return v
+
+
+class LoginRequest(BaseModel):
+    """
+    Represents a user login request.
+
+    Attributes:
+        email (str): User email address
+        password (str): User password
+    """
+    email: str = Field(..., description="User email address")
+    password: str = Field(..., description="User password")
+
+
+class LoginResponse(BaseModel):
+    """
+    Represents the response for a successful login.
+
+    Attributes:
+        access_token (str): JWT access token
+        refresh_token (str): JWT refresh token
+        token_type (str): Token type (always "bearer")
+        expires_in (int): Token expiration time in seconds
+        user (Dict[str, Any]): User information
+    """
+    access_token: str
+    refresh_token: str
+    token_type: str = "bearer"
+    expires_in: int
+    user: Optional[Dict[str, Any]] = None
+
+
+class RefreshTokenRequest(BaseModel):
+    """
+    Represents a token refresh request.
+
+    Attributes:
+        refresh_token (str): The refresh token
+    """
+    refresh_token: str = Field(..., description="Refresh token")
+
+
+class ChangePasswordRequest(BaseModel):
+    """
+    Represents a password change request.
+
+    Attributes:
+        old_password (str): Current password
+        new_password (str): New password
+        confirm_password (str): New password confirmation
+    """
+    old_password: str = Field(..., description="Current password")
+    new_password: str = Field(..., description="New password", min_length=8)
+    confirm_password: str = Field(..., description="New password confirmation")
+
+    @field_validator('confirm_password')
+    @classmethod
+    def passwords_match(cls, v, info):
+        """Validate that passwords match."""
+        if 'new_password' in info.data and v != info.data['new_password']:
+            raise ValueError('Passwords do not match')
+        return v
+
+
+class UserResponse(BaseModel):
+    """
+    Represents user information (without sensitive data).
+
+    Attributes:
+        id (str): User ID
+        email (str): User email
+        roles (List[str]): User roles
+        is_active (bool): Whether user is active
+        created_at (str): When user was created
+        last_login (Optional[str]): Last login timestamp
+    """
+    id: str
+    email: str
+    roles: List[str]
+    is_active: bool
+    created_at: str
+    last_login: Optional[str] = None
+
+
+class UserListResponse(BaseModel):
+    """
+    Represents a list of users.
+
+    Attributes:
+        users (List[UserResponse]): List of users
+        total (int): Total number of users
+    """
+    users: List[UserResponse]
+    total: int
+
+
+# ============================================================================
+# API Key Models (Phase 1)
+# ============================================================================
+
+class APIKeyCreateRequest(BaseModel):
+    """
+    Represents a request to create an API key.
+
+    Attributes:
+        name (str): Descriptive name for the API key
+        expires_days (Optional[int]): Days until expiration (None = never)
+    """
+    name: str = Field(..., description="Descriptive name for the API key", min_length=3, max_length=100)
+    expires_days: Optional[int] = Field(None, description="Days until expiration", ge=1, le=365)
+
+
+class APIKeyResponse(BaseModel):
+    """
+    Represents an API key (returned only on creation).
+
+    Attributes:
+        id (str): API key ID
+        name (str): API key name
+        key (str): The actual API key (only shown once!)
+        prefix (str): Key prefix for identification
+        created_at (str): When key was created
+        expires_at (Optional[str]): When key expires
+    """
+    id: str
+    name: str
+    key: str  # Only included on creation!
+    prefix: str
+    created_at: str
+    expires_at: Optional[str] = None
+
+
+class APIKeyInfo(BaseModel):
+    """
+    Represents API key information (without the actual key).
+
+    Attributes:
+        id (str): API key ID
+        name (str): API key name
+        prefix (str): Key prefix
+        is_active (bool): Whether key is active
+        created_at (str): When key was created
+        last_used (Optional[str]): When key was last used
+        expires_at (Optional[str]): When key expires
+    """
+    id: str
+    name: str
+    prefix: str
+    is_active: bool
+    created_at: str
+    last_used: Optional[str] = None
+    expires_at: Optional[str] = None
+
+
+class APIKeyListResponse(BaseModel):
+    """
+    Represents a list of API keys.
+
+    Attributes:
+        api_keys (List[APIKeyInfo]): List of API keys
+        total (int): Total number of keys
+    """
+    api_keys: List[APIKeyInfo]
+    total: int
+
+
+# ============================================================================
+# Audit Log Models (Phase 1)
+# ============================================================================
+
+class AuditLogEntry(BaseModel):
+    """
+    Represents an audit log entry.
+
+    Attributes:
+        id (str): Log entry ID
+        event_type (str): Type of event
+        user_id (Optional[str]): User who performed action
+        resource (str): Resource affected
+        action (str): Action performed
+        status (str): Result status
+        ip_address (str): Client IP address
+        timestamp (str): When event occurred
+        severity (str): Event severity
+        details (Optional[Dict[str, Any]]): Additional details
+    """
+    id: str
+    event_type: str
+    user_id: Optional[str]
+    resource: str
+    action: str
+    status: str
+    ip_address: str
+    timestamp: str
+    severity: str
+    details: Optional[Dict[str, Any]] = None
+
+
+class AuditLogListResponse(BaseModel):
+    """
+    Represents a list of audit logs.
+
+    Attributes:
+        logs (List[AuditLogEntry]): List of audit log entries
+        total (int): Total number of logs
+    """
+    logs: List[AuditLogEntry]
+    total: int
+
+
+class AuditLogStatsResponse(BaseModel):
+    """
+    Represents audit log statistics.
+
+    Attributes:
+        total_logs (int): Total number of logs
+        event_types (Dict[str, int]): Count by event type
+        severities (Dict[str, int]): Count by severity
+        failures (int): Number of failures
+        oldest_log (Optional[str]): Oldest log timestamp
+        newest_log (Optional[str]): Newest log timestamp
+    """
+    total_logs: int
+    event_types: Dict[str, int]
+    severities: Dict[str, int]
+    failures: int
+    oldest_log: Optional[str] = None
+    newest_log: Optional[str] = None

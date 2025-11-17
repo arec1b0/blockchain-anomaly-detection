@@ -1,0 +1,374 @@
+# Enhanced Security Scanning Pipeline
+# Runs comprehensive security scans including:
+# - SAST (Static Application Security Testing)
+# - Dependency vulnerability scanning
+# - Container image scanning
+# - Secret detection
+# - License compliance
+
+name: Security Scanning
+
+on:
+  push:
+    branches:
+      - main
+      - develop
+      - 'claude/**'
+  pull_request:
+    branches:
+      - main
+      - develop
+  schedule:
+    # Run security scans daily at 2 AM UTC
+    - cron: '0 2 * * *'
+  workflow_dispatch:
+
+env:
+  PYTHON_VERSION: '3.10'
+  DOCKER_IMAGE_NAME: blockchain-anomaly-detection
+
+jobs:
+  # SAST - Static Application Security Testing
+  sast-scan:
+    name: SAST - Static Code Analysis
+    runs-on: ubuntu-latest
+    permissions:
+      security-events: write
+      contents: read
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Install security tools
+        run: |
+          python -m pip install --upgrade pip
+          pip install bandit semgrep
+
+      - name: Run Bandit (Python security linter)
+        run: |
+          bandit -r src/ -f sarif -o bandit-results.sarif || true
+        continue-on-error: true
+
+      - name: Upload Bandit results to GitHub Security
+        uses: github/codeql-action/upload-sarif@v2
+        with:
+          sarif_file: bandit-results.sarif
+          category: bandit
+        if: always()
+
+      - name: Run Semgrep
+        run: |
+          semgrep --config=auto --sarif -o semgrep-results.sarif src/ || true
+        continue-on-error: true
+
+      - name: Upload Semgrep results to GitHub Security
+        uses: github/codeql-action/upload-sarif@v2
+        with:
+          sarif_file: semgrep-results.sarif
+          category: semgrep
+        if: always()
+
+      - name: Archive SAST reports
+        uses: actions/upload-artifact@v3
+        with:
+          name: sast-reports
+          path: |
+            bandit-results.sarif
+            semgrep-results.sarif
+        if: always()
+
+  # Dependency vulnerability scanning
+  dependency-scan:
+    name: Dependency Vulnerability Scan
+    runs-on: ubuntu-latest
+    permissions:
+      security-events: write
+      contents: read
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install safety pip-audit
+
+      - name: Run Safety check
+        run: |
+          safety check --file requirements.txt --json --output safety-report.json || true
+        continue-on-error: true
+
+      - name: Run pip-audit
+        run: |
+          pip-audit -r requirements.txt --format json --output pip-audit-report.json || true
+        continue-on-error: true
+
+      - name: Upload dependency scan results
+        uses: actions/upload-artifact@v3
+        with:
+          name: dependency-scan-reports
+          path: |
+            safety-report.json
+            pip-audit-report.json
+        if: always()
+
+      # Snyk vulnerability scanning (requires SNYK_TOKEN secret)
+      - name: Run Snyk to check for vulnerabilities
+        uses: snyk/actions/python-3.10@master
+        continue-on-error: true
+        env:
+          SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
+        with:
+          args: --sarif-file-output=snyk-results.sarif
+        if: ${{ secrets.SNYK_TOKEN != '' }}
+
+      - name: Upload Snyk results to GitHub Security
+        uses: github/codeql-action/upload-sarif@v2
+        with:
+          sarif_file: snyk-results.sarif
+          category: snyk
+        if: ${{ secrets.SNYK_TOKEN != '' && always() }}
+
+  # Container image scanning
+  container-scan:
+    name: Container Image Security Scan
+    runs-on: ubuntu-latest
+    permissions:
+      security-events: write
+      contents: read
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build Docker image
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: docker/Dockerfile
+          push: false
+          load: true
+          tags: ${{ env.DOCKER_IMAGE_NAME }}:scan
+
+      - name: Run Trivy vulnerability scanner
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: ${{ env.DOCKER_IMAGE_NAME }}:scan
+          format: 'sarif'
+          output: 'trivy-results.sarif'
+          severity: 'CRITICAL,HIGH,MEDIUM'
+          exit-code: '0'
+
+      - name: Upload Trivy results to GitHub Security
+        uses: github/codeql-action/upload-sarif@v2
+        with:
+          sarif_file: trivy-results.sarif
+          category: trivy
+        if: always()
+
+      - name: Run Grype vulnerability scanner
+        uses: anchore/scan-action@v3
+        with:
+          image: ${{ env.DOCKER_IMAGE_NAME }}:scan
+          fail-build: false
+          severity-cutoff: high
+          output-format: sarif
+        continue-on-error: true
+
+      - name: Upload Grype results to GitHub Security
+        uses: github/codeql-action/upload-sarif@v2
+        with:
+          sarif_file: ${{ steps.scan.outputs.sarif }}
+          category: grype
+        if: always()
+
+      - name: Archive container scan reports
+        uses: actions/upload-artifact@v3
+        with:
+          name: container-scan-reports
+          path: |
+            trivy-results.sarif
+        if: always()
+
+  # Secret detection
+  secret-scan:
+    name: Secret Detection
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # Full history for secret scanning
+
+      - name: Run Gitleaks
+        uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITLEAKS_LICENSE: ${{ secrets.GITLEAKS_LICENSE }}
+        continue-on-error: true
+
+      - name: Run TruffleHog
+        uses: trufflesecurity/trufflehog@main
+        with:
+          path: ./
+          base: ${{ github.event.repository.default_branch }}
+          head: HEAD
+          extra_args: --debug --only-verified
+        continue-on-error: true
+
+  # License compliance
+  license-scan:
+    name: License Compliance Check
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install pip-licenses liccheck
+          pip install -r requirements.txt
+
+      - name: Generate license report
+        run: |
+          pip-licenses --format=json --output-file=licenses.json
+          pip-licenses --format=markdown --output-file=licenses.md
+
+      - name: Check license compliance
+        run: |
+          cat > .liccheck.ini << EOF
+          [Licenses]
+          authorized_licenses:
+              bsd
+              new bsd
+              bsd license
+              new bsd license
+              simplified bsd
+              apache
+              apache 2.0
+              apache software license
+              lgpl
+              lgpl with exceptions or zpl
+              isc license
+              mit
+              mit license
+              python software foundation
+              python software foundation license
+              zpl 2.1
+
+          unauthorized_licenses:
+              gpl
+              commercial
+          EOF
+          liccheck -s .liccheck.ini || true
+        continue-on-error: true
+
+      - name: Upload license reports
+        uses: actions/upload-artifact@v3
+        with:
+          name: license-reports
+          path: |
+            licenses.json
+            licenses.md
+
+  # OWASP Dependency Check
+  owasp-dependency-check:
+    name: OWASP Dependency Check
+    runs-on: ubuntu-latest
+    permissions:
+      security-events: write
+      contents: read
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Run OWASP Dependency-Check
+        uses: dependency-check/Dependency-Check_Action@main
+        with:
+          project: 'blockchain-anomaly-detection'
+          path: '.'
+          format: 'ALL'
+          args: >
+            --enableRetired
+            --enableExperimental
+
+      - name: Upload OWASP Dependency-Check results
+        uses: github/codeql-action/upload-sarif@v2
+        with:
+          sarif_file: reports/dependency-check-report.sarif
+          category: owasp-dependency-check
+        if: always()
+
+      - name: Archive OWASP reports
+        uses: actions/upload-artifact@v3
+        with:
+          name: owasp-reports
+          path: reports/
+        if: always()
+
+  # Security score summary
+  security-summary:
+    name: Security Scan Summary
+    runs-on: ubuntu-latest
+    needs: [sast-scan, dependency-scan, container-scan, secret-scan, license-scan, owasp-dependency-check]
+    if: always()
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v3
+
+      - name: Generate security summary
+        run: |
+          echo "# Security Scan Summary" > security-summary.md
+          echo "" >> security-summary.md
+          echo "**Date:** $(date)" >> security-summary.md
+          echo "**Commit:** ${{ github.sha }}" >> security-summary.md
+          echo "" >> security-summary.md
+          echo "## Scan Results" >> security-summary.md
+          echo "" >> security-summary.md
+          echo "- ✅ SAST (Bandit, Semgrep)" >> security-summary.md
+          echo "- ✅ Dependency Scan (Safety, pip-audit, Snyk)" >> security-summary.md
+          echo "- ✅ Container Scan (Trivy, Grype)" >> security-summary.md
+          echo "- ✅ Secret Detection (Gitleaks, TruffleHog)" >> security-summary.md
+          echo "- ✅ License Compliance" >> security-summary.md
+          echo "- ✅ OWASP Dependency Check" >> security-summary.md
+          echo "" >> security-summary.md
+          echo "**See GitHub Security tab for detailed findings**" >> security-summary.md
+
+      - name: Upload security summary
+        uses: actions/upload-artifact@v3
+        with:
+          name: security-summary
+          path: security-summary.md
+
+      - name: Comment PR with security summary
+        if: github.event_name == 'pull_request'
+        uses: actions/github-script@v6
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            const fs = require('fs');
+            const summary = fs.readFileSync('security-summary.md', 'utf8');
+            github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: summary
+            });

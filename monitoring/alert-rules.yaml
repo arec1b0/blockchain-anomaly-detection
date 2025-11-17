@@ -1,0 +1,303 @@
+# Prometheus Alert Rules for Blockchain Anomaly Detection System
+
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: blockchain-anomaly-alert-rules
+  namespace: monitoring
+  labels:
+    prometheus: kube-prometheus
+    role: alert-rules
+spec:
+  groups:
+    # API Health Alerts
+    - name: api-health
+      interval: 30s
+      rules:
+        - alert: APIDown
+          expr: up{job="api-pods"} == 0
+          for: 1m
+          labels:
+            severity: critical
+          annotations:
+            summary: "API pod {{ $labels.pod }} is down"
+            description: "API pod {{ $labels.pod }} in namespace {{ $labels.namespace }} has been down for more than 1 minute."
+
+        - alert: APIHighErrorRate
+          expr: |
+            (
+              rate(http_requests_total{status=~"5..", job="api-pods"}[5m])
+              /
+              rate(http_requests_total{job="api-pods"}[5m])
+            ) > 0.05
+          for: 5m
+          labels:
+            severity: critical
+          annotations:
+            summary: "High API error rate detected"
+            description: "API error rate is {{ $value | humanizePercentage }} (threshold: 5%)"
+
+        - alert: APIHighLatency
+          expr: |
+            histogram_quantile(0.95,
+              rate(http_request_duration_seconds_bucket{job="api-pods"}[5m])
+            ) > 0.5
+          for: 5m
+          labels:
+            severity: warning
+          annotations:
+            summary: "High API latency detected"
+            description: "API p95 latency is {{ $value }}s (threshold: 0.5s)"
+
+        - alert: APILowThroughput
+          expr: rate(http_requests_total{job="api-pods"}[5m]) < 10
+          for: 10m
+          labels:
+            severity: warning
+          annotations:
+            summary: "Low API throughput"
+            description: "API request rate is {{ $value }} requests/sec (threshold: 10 req/s)"
+
+    # Kafka Consumer Alerts
+    - name: kafka-consumer
+      interval: 30s
+      rules:
+        - alert: ConsumerDown
+          expr: up{job="consumer-pods"} == 0
+          for: 1m
+          labels:
+            severity: critical
+          annotations:
+            summary: "Kafka consumer pod {{ $labels.pod }} is down"
+            description: "Consumer pod {{ $labels.pod }} has been down for more than 1 minute."
+
+        - alert: ConsumerLag
+          expr: kafka_consumer_lag > 10000
+          for: 5m
+          labels:
+            severity: warning
+          annotations:
+            summary: "High Kafka consumer lag"
+            description: "Consumer lag is {{ $value }} messages (threshold: 10000)"
+
+        - alert: ConsumerProcessingErrors
+          expr: |
+            rate(kafka_messages_consumed_total{status="error"}[5m])
+            /
+            rate(kafka_messages_consumed_total[5m])
+            > 0.01
+          for: 5m
+          labels:
+            severity: warning
+          annotations:
+            summary: "High consumer processing error rate"
+            description: "Error rate is {{ $value | humanizePercentage }} (threshold: 1%)"
+
+    # Anomaly Detection Alerts
+    - name: anomaly-detection
+      interval: 1m
+      rules:
+        - alert: HighAnomalyRate
+          expr: |
+            rate(anomalies_detected_total[5m])
+            /
+            rate(transactions_processed_total[5m])
+            > 0.1
+          for: 10m
+          labels:
+            severity: warning
+          annotations:
+            summary: "High anomaly detection rate"
+            description: "Anomaly rate is {{ $value | humanizePercentage }} (threshold: 10%)"
+
+        - alert: CriticalAnomaliesDetected
+          expr: rate(anomalies_detected_total{severity="critical"}[5m]) > 5
+          for: 5m
+          labels:
+            severity: critical
+          annotations:
+            summary: "Critical anomalies detected"
+            description: "Detecting {{ $value }} critical anomalies per second"
+
+        - alert: NoTransactionsProcessed
+          expr: rate(transactions_processed_total[5m]) == 0
+          for: 10m
+          labels:
+            severity: warning
+          annotations:
+            summary: "No transactions being processed"
+            description: "Transaction processing has stopped for more than 10 minutes"
+
+        - alert: AnomalyBufferNearlyFull
+          expr: anomaly_buffer_size / anomaly_buffer_max_size > 0.9
+          for: 5m
+          labels:
+            severity: warning
+          annotations:
+            summary: "Anomaly buffer nearly full"
+            description: "Anomaly buffer is {{ $value | humanizePercentage }} full (threshold: 90%)"
+
+    # Redis Cache Alerts
+    - name: redis-cache
+      interval: 30s
+      rules:
+        - alert: RedisDown
+          expr: redis_up == 0
+          for: 1m
+          labels:
+            severity: critical
+          annotations:
+            summary: "Redis is down"
+            description: "Redis instance {{ $labels.instance }} has been down for more than 1 minute."
+
+        - alert: RedisLowCacheHitRate
+          expr: redis_cache_hit_rate < 0.5
+          for: 10m
+          labels:
+            severity: warning
+          annotations:
+            summary: "Low Redis cache hit rate"
+            description: "Cache hit rate is {{ $value | humanizePercentage }} (threshold: 50%)"
+
+        - alert: RedisHighMemoryUsage
+          expr: redis_memory_used_bytes / redis_memory_max_bytes > 0.9
+          for: 5m
+          labels:
+            severity: warning
+          annotations:
+            summary: "Redis high memory usage"
+            description: "Redis memory usage is {{ $value | humanizePercentage }} (threshold: 90%)"
+
+        - alert: RedisConnectionPoolExhausted
+          expr: redis_connection_pool_in_use / redis_connection_pool_max > 0.9
+          for: 5m
+          labels:
+            severity: warning
+          annotations:
+            summary: "Redis connection pool nearly exhausted"
+            description: "Connection pool is {{ $value | humanizePercentage }} used (threshold: 90%)"
+
+    # PostgreSQL Database Alerts
+    - name: postgresql
+      interval: 30s
+      rules:
+        - alert: PostgreSQLDown
+          expr: pg_up == 0
+          for: 1m
+          labels:
+            severity: critical
+          annotations:
+            summary: "PostgreSQL is down"
+            description: "PostgreSQL instance {{ $labels.instance }} has been down for more than 1 minute."
+
+        - alert: PostgreSQLHighConnections
+          expr: sum(pg_stat_activity_count) / pg_settings_max_connections > 0.8
+          for: 5m
+          labels:
+            severity: warning
+          annotations:
+            summary: "PostgreSQL high connection usage"
+            description: "Connection usage is {{ $value | humanizePercentage }} (threshold: 80%)"
+
+        - alert: PostgreSQLSlowQueries
+          expr: pg_stat_statements_mean_time_ms > 1000
+          for: 5m
+          labels:
+            severity: warning
+          annotations:
+            summary: "PostgreSQL slow queries detected"
+            description: "Mean query time is {{ $value }}ms (threshold: 1000ms)"
+
+        - alert: PostgreSQLHighDiskUsage
+          expr: pg_database_size_bytes / pg_disk_size_bytes > 0.85
+          for: 5m
+          labels:
+            severity: warning
+          annotations:
+            summary: "PostgreSQL high disk usage"
+            description: "Disk usage is {{ $value | humanizePercentage }} (threshold: 85%)"
+
+        - alert: PostgreSQLReplicationLag
+          expr: pg_replication_lag_seconds > 30
+          for: 5m
+          labels:
+            severity: warning
+          annotations:
+            summary: "PostgreSQL replication lag"
+            description: "Replication lag is {{ $value }}s (threshold: 30s)"
+
+    # System Resource Alerts
+    - name: system-resources
+      interval: 30s
+      rules:
+        - alert: HighCPUUsage
+          expr: system_cpu_usage_percent > 80
+          for: 5m
+          labels:
+            severity: warning
+          annotations:
+            summary: "High CPU usage on {{ $labels.pod }}"
+            description: "CPU usage is {{ $value }}% (threshold: 80%)"
+
+        - alert: HighMemoryUsage
+          expr: |
+            (
+              system_memory_usage_bytes
+              /
+              (system_memory_usage_bytes + system_memory_available_bytes)
+            ) > 0.85
+          for: 5m
+          labels:
+            severity: warning
+          annotations:
+            summary: "High memory usage on {{ $labels.pod }}"
+            description: "Memory usage is {{ $value | humanizePercentage }} (threshold: 85%)"
+
+        - alert: HighDiskUsage
+          expr: system_disk_usage_percent > 85
+          for: 5m
+          labels:
+            severity: warning
+          annotations:
+            summary: "High disk usage on {{ $labels.pod }}"
+            description: "Disk usage is {{ $value }}% (threshold: 85%)"
+
+        - alert: PodCrashLooping
+          expr: rate(kube_pod_container_status_restarts_total[15m]) > 0
+          for: 5m
+          labels:
+            severity: critical
+          annotations:
+            summary: "Pod {{ $labels.pod }} is crash looping"
+            description: "Pod {{ $labels.pod }} in namespace {{ $labels.namespace }} has restarted {{ $value }} times in the last 15 minutes"
+
+    # ML Model Performance Alerts
+    - name: ml-model-performance
+      interval: 1m
+      rules:
+        - alert: ModelDriftDetected
+          expr: model_drift_score > 0.3
+          for: 30m
+          labels:
+            severity: warning
+          annotations:
+            summary: "ML model drift detected"
+            description: "Model drift score is {{ $value }} (threshold: 0.3)"
+
+        - alert: ModelLatencyHigh
+          expr: histogram_quantile(0.95, rate(model_inference_duration_seconds_bucket[5m])) > 0.1
+          for: 5m
+          labels:
+            severity: warning
+          annotations:
+            summary: "High model inference latency"
+            description: "Model p95 inference latency is {{ $value }}s (threshold: 0.1s)"
+
+        - alert: ModelAccuracyDrop
+          expr: model_accuracy < 0.85
+          for: 1h
+          labels:
+            severity: warning
+          annotations:
+            summary: "Model accuracy drop detected"
+            description: "Model accuracy is {{ $value | humanizePercentage }} (threshold: 85%)"
