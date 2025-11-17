@@ -1,0 +1,4 @@
+Generic single-database configuration with an async context manager.
+
+Alembic migrations will be stored in the `versions/` directory.
+

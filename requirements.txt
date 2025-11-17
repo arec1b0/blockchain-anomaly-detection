@@ -42,6 +42,11 @@ aiofiles==23.2.1
 httpx==0.25.1
 psutil==5.9.6
 
+# Database
+SQLAlchemy==2.0.23
+psycopg2-binary==2.9.9
+alembic==1.12.1
+
 # Testing
 pytest-asyncio==0.21.1
 pytest-cov==4.1.0

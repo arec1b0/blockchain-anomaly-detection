@@ -68,6 +68,28 @@ class Config:
         self.SENTRY_ENVIRONMENT = os.getenv("SENTRY_ENVIRONMENT", self.ENVIRONMENT)
         self.SENTRY_TRACES_SAMPLE_RATE = float(os.getenv("SENTRY_TRACES_SAMPLE_RATE", "1.0"))
 
+        # Database Configuration
+        self.DATABASE_HOST = os.getenv("DATABASE_HOST", "localhost")
+        self.DATABASE_PORT = int(os.getenv("DATABASE_PORT", "5432"))
+        self.DATABASE_NAME = os.getenv("DATABASE_NAME", "blockchain_anomaly")
+        self.DATABASE_USER = os.getenv("DATABASE_USER", "anomaly_user")
+        self.DATABASE_PASSWORD = os.getenv("DATABASE_PASSWORD", "")
+        
+        # Construct DATABASE_URL if not provided directly
+        database_url = os.getenv("DATABASE_URL")
+        if not database_url:
+            database_url = (
+                f"postgresql://{self.DATABASE_USER}:{self.DATABASE_PASSWORD}"
+                f"@{self.DATABASE_HOST}:{self.DATABASE_PORT}/{self.DATABASE_NAME}"
+            )
+        self.DATABASE_URL = database_url
+        
+        # Database Pool Configuration
+        self.DATABASE_POOL_SIZE = int(os.getenv("DATABASE_POOL_SIZE", "20"))
+        self.DATABASE_MAX_OVERFLOW = int(os.getenv("DATABASE_MAX_OVERFLOW", "10"))
+        self.DATABASE_POOL_TIMEOUT = int(os.getenv("DATABASE_POOL_TIMEOUT", "30"))
+        self.DATABASE_POOL_RECYCLE = int(os.getenv("DATABASE_POOL_RECYCLE", "3600"))
+
     def validate(self) -> bool:
         """
         Validates that the required configuration values are set.
@@ -94,6 +116,9 @@ class Config:
 
         if self.SENTRY_ENABLED and not self.SENTRY_DSN:
             errors.append("SENTRY_DSN is required when SENTRY_ENABLED is true")
+
+        if not self.DATABASE_PASSWORD:
+            errors.append("DATABASE_PASSWORD is required")
 
         if errors:
             raise ValueError(f"Configuration validation failed: {'; '.join(errors)}")

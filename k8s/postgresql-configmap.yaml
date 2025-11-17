@@ -1,0 +1,10 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: postgresql-config
+  namespace: blockchain-anomaly-prod
+data:
+  POSTGRES_DB: blockchain_anomaly
+  POSTGRES_USER: anomaly_user
+  PGDATA: /var/lib/postgresql/data/pgdata
+

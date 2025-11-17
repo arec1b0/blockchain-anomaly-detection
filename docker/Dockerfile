@@ -32,6 +32,7 @@ WORKDIR /app
 # Install runtime dependencies
 RUN apt-get update && apt-get install -y --no-install-recommends \
     curl \
+    postgresql-client \
     && rm -rf /var/lib/apt/lists/*
 
 # Copy Python dependencies from builder
@@ -43,6 +44,8 @@ COPY src /app/src
 COPY setup.py /app/
 COPY pyproject.toml /app/
 COPY MANIFEST.in /app/
+COPY alembic.ini /app/
+COPY alembic /app/alembic
 
 # Create necessary directories
 RUN mkdir -p /app/models /app/logs /app/data
@@ -54,9 +57,16 @@ ENV PYTHONUNBUFFERED=1
 # Expose port
 EXPOSE 8000
 
+# Copy entrypoint script
+COPY docker/entrypoint.sh /entrypoint.sh
+RUN chmod +x /entrypoint.sh
+
 # Health check
 HEALTHCHECK --interval=30s --timeout=10s --start-period=40s --retries=3 \
     CMD curl -f http://localhost:8000/health/live || exit 1
+
+# Use entrypoint script
+ENTRYPOINT ["/entrypoint.sh"]
 
 # Run the application
 CMD ["uvicorn", "src.api_server.app:app", "--host", "0.0.0.0", "--port", "8000", "--log-level", "info"]

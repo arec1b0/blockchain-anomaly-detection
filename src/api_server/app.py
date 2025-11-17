@@ -20,6 +20,7 @@ from typing import List, Optional, Dict, Any
 import os
 
 from fastapi import FastAPI, HTTPException, BackgroundTasks, Request, Depends, status
+from sqlalchemy.orm import Session
 from fastapi.responses import JSONResponse, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
@@ -71,6 +72,19 @@ from src.streaming.stream_processor import StreamProcessor
 from src.streaming.kafka_consumer import KafkaConsumerService
 from src.cache import get_cache_layer, get_redis_client
 from src.utils.logger import get_logger
+from src.database import get_db, check_db_connection
+from src.database.repositories import (
+    TransactionRepository,
+    AnomalyRepository,
+    ModelRepository,
+    ModelVersionRepository
+)
+from src.database.models import (
+    Transaction as TransactionModel,
+    Anomaly as AnomalyModel,
+    Prediction as PredictionModel,
+    SeverityEnum
+)
 
 # Authentication imports
 from src.auth.jwt_handler import (
@@ -171,6 +185,12 @@ async def lifespan(app: FastAPI):
     health_checker.set_stream_processor(stream_processor)
     if cache_layer:
         health_checker.set_cache_layer(cache_layer)
+    
+    # Check database connection
+    if check_db_connection():
+        logger.info("Database connection verified")
+    else:
+        logger.warning("Database connection check failed - some features may not work")
 
     # Initialize Kafka consumer if enabled
     if os.getenv('KAFKA_ENABLED', 'false').lower() == 'true':
@@ -884,43 +904,110 @@ async def get_user_from_auth(
 @app.post("/api/v1/predict", response_model=PredictionResponse, tags=["Prediction"])
 async def predict_single(
     transaction: TransactionData,
-    current_user: Dict[str, Any] = Depends(get_current_active_user)
+    current_user: Dict[str, Any] = Depends(get_current_active_user),
+    db: Session = Depends(get_db)
 ):
     """
     Predict if a single transaction is anomalous.
 
     Requires authentication via JWT token or API key.
+    Stores transaction and prediction in database.
     """
     try:
         start_time = time.time()
 
-        # Process transaction
-        stream_processor.process_transaction(transaction.model_dump(by_alias=True))
+        # Create repositories
+        transaction_repo = TransactionRepository(db)
+        anomaly_repo = AnomalyRepository(db)
+
+        # Check if transaction already exists
+        existing_tx = transaction_repo.get_by_hash(transaction.hash)
+        
+        if not existing_tx:
+            # Store transaction
+            tx_model = TransactionModel(
+                hash=transaction.hash,
+                block_number=transaction.blockNumber or 0,
+                timestamp=datetime.fromisoformat(transaction.timestamp.replace('Z', '+00:00')) if transaction.timestamp else datetime.utcnow(),
+                from_address=transaction.from_address or "0x0",
+                to_address=transaction.to_address,
+                value=transaction.value,
+                gas=transaction.gas,
+                gas_price=transaction.gasPrice,
+                nonce=getattr(transaction, 'nonce', 0) or 0
+            )
+            existing_tx = transaction_repo.create(tx_model)
+
+        # Process transaction through stream processor
+        result = stream_processor.process_transaction(transaction.model_dump(by_alias=True))
         stream_processor.flush()
 
         # Get anomalies
         anomalies = stream_processor.get_anomalies()
-
-        # Check if this transaction was flagged
         is_anomaly = any(a['hash'] == transaction.hash for a in anomalies)
 
+        # Determine severity and confidence
+        severity_str = None
+        confidence = 0.0
+        anomaly_score = None
+        
         if is_anomaly:
             anomaly_data = next(a for a in anomalies if a['hash'] == transaction.hash)
-            severity = anomaly_data.get('severity', 'low')
-        else:
-            severity = None
+            severity_str = anomaly_data.get('severity', 'low')
+            confidence = anomaly_data.get('confidence', 0.0)
+            anomaly_score = anomaly_data.get('anomaly_score', 0.0)
+            
+            # Map severity string to enum
+            severity_map = {
+                'low': SeverityEnum.low,
+                'medium': SeverityEnum.medium,
+                'high': SeverityEnum.high,
+                'critical': SeverityEnum.critical
+            }
+            severity_enum = severity_map.get(severity_str, SeverityEnum.low)
+            
+            # Store anomaly in database
+            # Get active model version ID (simplified - should use actual model version)
+            model_version_id = app_state.get('active_model_id', 'default-model-id')
+            
+            anomaly_model = AnomalyModel(
+                transaction_id=existing_tx.id,
+                model_id=model_version_id,
+                anomaly_score=anomaly_score,
+                severity=severity_enum,
+                confidence=confidence,
+                features_used=anomaly_data.get('features', {}),
+                detected_at=datetime.utcnow()
+            )
+            anomaly_repo.create(anomaly_model)
+
+        # Store prediction
+        model_version_id = app_state.get('active_model_id', 'default-model-id')
+        prediction_model = PredictionModel(
+            transaction_id=existing_tx.id,
+            model_version_id=model_version_id,
+            user_id=current_user.get("sub"),
+            is_anomaly=is_anomaly,
+            confidence=confidence,
+            anomaly_score=anomaly_score,
+            response_time_ms=(time.time() - start_time) * 1000,
+            created_at=datetime.utcnow()
+        )
+        db.add(prediction_model)
+        db.commit()
 
         processing_time = (time.time() - start_time) * 1000
 
         return PredictionResponse(
             hash=transaction.hash,
             is_anomaly=is_anomaly,
-            severity=severity,
+            severity=severity_str,
             timestamp=datetime.utcnow().isoformat()
         )
 
     except Exception as e:
         logger.error(f"Error in prediction: {e}", exc_info=True)
+        db.rollback()
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Prediction failed: {str(e)}"
@@ -1129,33 +1216,67 @@ async def delete_model(
 async def get_anomalies(
     limit: Optional[int] = 100,
     severity: Optional[str] = None,
-    current_user: Dict[str, Any] = Depends(get_current_active_user)
+    skip: int = 0,
+    current_user: Dict[str, Any] = Depends(get_current_active_user),
+    db: Session = Depends(get_db)
 ):
-    """Get detected anomalies (Authentication required)."""
-    anomalies = stream_processor.get_anomalies(limit=limit)
-
-    # Filter by severity if specified
+    """Get detected anomalies from database (Authentication required)."""
+    anomaly_repo = AnomalyRepository(db)
+    
     if severity:
-        anomalies = [a for a in anomalies if a.get('severity') == severity]
+        # Get by severity
+        severity_enum = SeverityEnum[severity.lower()]
+        anomalies = anomaly_repo.get_by_severity(severity_enum, skip=skip, limit=limit)
+    else:
+        # Get all anomalies
+        anomalies = anomaly_repo.get_all(skip=skip, limit=limit)
 
     anomaly_records = [
         AnomalyRecord(
-            hash=a['hash'],
-            value=a['value'],
-            gas=a['gas'],
-            gasPrice=a['gasPrice'],
-            from_address=a.get('from'),
-            to_address=a.get('to'),
-            timestamp=a.get('timestamp', ''),
-            detected_at=a.get('detected_at', ''),
-            severity=a.get('severity', 'low')
+            hash=a.transaction.hash,
+            value=a.transaction.value,
+            gas=a.transaction.gas,
+            gasPrice=a.transaction.gas_price,
+            from_address=a.transaction.from_address,
+            to_address=a.transaction.to_address,
+            timestamp=a.transaction.timestamp.isoformat() if a.transaction.timestamp else '',
+            detected_at=a.detected_at.isoformat() if a.detected_at else '',
+            severity=a.severity.value if isinstance(a.severity, SeverityEnum) else str(a.severity)
         )
         for a in anomalies
     ]
 
     return AnomalyListResponse(
         anomalies=anomaly_records,
-        total_count=len(anomaly_records)
+        total_count=anomaly_repo.count()
+    )
+
+
+@app.get("/api/v1/transactions/{hash}", response_model=TransactionData, tags=["Transactions"])
+async def get_transaction(
+    hash: str,
+    current_user: Dict[str, Any] = Depends(get_current_active_user),
+    db: Session = Depends(get_db)
+):
+    """Get transaction details by hash."""
+    transaction_repo = TransactionRepository(db)
+    tx = transaction_repo.get_by_hash(hash)
+    
+    if not tx:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Transaction not found"
+        )
+    
+    return TransactionData(
+        hash=tx.hash,
+        value=tx.value,
+        gas=tx.gas,
+        gasPrice=tx.gas_price,
+        from_address=tx.from_address,
+        to_address=tx.to_address,
+        blockNumber=tx.block_number,
+        timestamp=tx.timestamp.isoformat() if tx.timestamp else None
     )
 
 

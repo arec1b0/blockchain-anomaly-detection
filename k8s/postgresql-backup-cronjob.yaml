@@ -1,0 +1,75 @@
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: postgresql-backup
+  namespace: blockchain-anomaly-prod
+spec:
+  schedule: "0 2 * * *"  # Daily at 2 AM
+  successfulJobsHistoryLimit: 7
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      template:
+        spec:
+          restartPolicy: OnFailure
+          containers:
+          - name: backup
+            image: postgres:15-alpine
+            env:
+            - name: PGHOST
+              value: postgresql
+            - name: PGPORT
+              value: "5432"
+            - name: PGDATABASE
+              valueFrom:
+                configMapKeyRef:
+                  name: postgresql-config
+                  key: POSTGRES_DB
+            - name: PGUSER
+              valueFrom:
+                configMapKeyRef:
+                  name: postgresql-config
+                  key: POSTGRES_USER
+            - name: PGPASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: postgresql-secret
+                  key: POSTGRES_PASSWORD
+            - name: BACKUP_BUCKET
+              value: "s3://blockchain-anomaly-backups"
+            - name: AWS_ACCESS_KEY_ID
+              valueFrom:
+                secretKeyRef:
+                  name: aws-credentials
+                  key: access_key_id
+            - name: AWS_SECRET_ACCESS_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: aws-credentials
+                  key: secret_access_key
+            command:
+            - /bin/sh
+            - -c
+            - |
+              # Install AWS CLI
+              apk add --no-cache aws-cli
+              # Create backup filename with timestamp
+              BACKUP_FILE="backup-$(date +%Y%m%d-%H%M%S).sql.gz"
+              # Dump database and compress
+              pg_dump | gzip > /tmp/$BACKUP_FILE
+              # Upload to S3
+              aws s3 cp /tmp/$BACKUP_FILE $BACKUP_BUCKET/$BACKUP_FILE
+              # Cleanup old backups (keep last 30 days)
+              aws s3 ls $BACKUP_BUCKET/ | while read -r line; do
+                createDate=$(echo $line | awk {'print $1" "$2'})
+                createTimestamp=$(date -d"$createDate" +%s)
+                olderThan=$(date -d "30 days ago" +%s)
+                if [[ $createTimestamp -lt $olderThan ]]; then
+                  fileName=$(echo $line | awk {'print $4'})
+                  if [[ $fileName != "" ]]; then
+                    aws s3 rm $BACKUP_BUCKET/$fileName
+                  fi
+                fi
+              done
+              echo "Backup completed: $BACKUP_FILE"
+
