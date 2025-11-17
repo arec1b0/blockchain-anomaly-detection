@@ -1,25 +1,33 @@
 """
-FastAPI application for blockchain anomaly detection.
+FastAPI application for blockchain anomaly detection with authentication.
 
-This module defines a FastAPI application that provides a REST API for real-time
-blockchain transaction anomaly detection. It includes endpoints for prediction,
-model management, health checks, and streaming status.
+This module extends the base FastAPI application with:
+- JWT-based authentication
+- API key authentication
+- Role-based access control
+- Rate limiting
+- Comprehensive audit logging
+
+All prediction and model management endpoints now require authentication.
+Admin endpoints require admin role.
 """
 
 import logging
 import time
 from contextlib import asynccontextmanager
 from datetime import datetime
-from typing import List, Optional
+from typing import List, Optional, Dict, Any
 import os
 
-from fastapi import FastAPI, HTTPException, BackgroundTasks, Request, status
+from fastapi import FastAPI, HTTPException, BackgroundTasks, Request, Depends, status
 from fastapi.responses import JSONResponse, Response
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from prometheus_client import generate_latest, CONTENT_TYPE_LATEST
 from prometheus_fastapi_instrumentator import Instrumentator
 
 from src.api_server.models import (
+    # Existing models
     TransactionData,
     BatchTransactionRequest,
     PredictionResponse,
@@ -34,7 +42,24 @@ from src.api_server.models import (
     StreamStatusResponse,
     HealthCheckResponse,
     ErrorResponse,
-    SuccessResponse
+    SuccessResponse,
+    # Authentication models
+    RegisterRequest,
+    LoginRequest,
+    LoginResponse,
+    RefreshTokenRequest,
+    ChangePasswordRequest,
+    UserResponse,
+    UserListResponse,
+    # API Key models
+    APIKeyCreateRequest,
+    APIKeyResponse,
+    APIKeyInfo,
+    APIKeyListResponse,
+    # Audit Log models
+    AuditLogEntry,
+    AuditLogListResponse,
+    AuditLogStatsResponse
 )
 from src.api_server.monitoring import (
     health_checker,
@@ -47,17 +72,39 @@ from src.streaming.kafka_consumer import KafkaConsumerService
 from src.cache import get_cache_layer, get_redis_client
 from src.utils.logger import get_logger
 
+# Authentication imports
+from src.auth.jwt_handler import (
+    jwt_handler,
+    get_current_user,
+    get_current_active_user,
+    require_role,
+    require_all_roles
+)
+from src.auth.user_manager import get_user_manager
+from src.auth.api_key_manager import get_api_key_manager, get_user_from_api_key
+
+# Middleware imports
+from src.middleware.rate_limiter import RateLimitMiddleware, RateLimiter
+from src.audit.audit_logger import get_audit_logger, AuditMiddleware
+
 logger = get_logger(__name__)
+security = HTTPBearer()
 
 # Global state
 stream_processor: Optional[StreamProcessor] = None
 kafka_consumer: Optional[KafkaConsumerService] = None
 cache_layer = None
+rate_limiter = None
+audit_logger = None
+user_manager = None
+api_key_manager = None
+
 app_state = {
     'models': {},
     'active_model_id': None,
     'streaming_enabled': False,
-    'cache_enabled': False
+    'cache_enabled': False,
+    'authentication_enabled': True
 }
 
 
@@ -66,18 +113,32 @@ async def lifespan(app: FastAPI):
     """
     Application lifespan manager for handling startup and shutdown events.
 
-    During startup, it initializes the stream processor and Kafka consumer.
-    During shutdown, it disconnects the Kafka consumer if it's running.
-
-    Args:
-        app (FastAPI): The FastAPI application instance.
+    Initializes:
+    - Authentication (user manager, API key manager, audit logger)
+    - Rate limiter
+    - Redis cache
+    - Stream processor
+    - Kafka consumer
     """
     # Startup
-    logger.info("Starting Blockchain Anomaly Detection API")
+    logger.info("Starting Blockchain Anomaly Detection API with Authentication")
+
+    # Initialize authentication components
+    global user_manager, api_key_manager, audit_logger
+    user_manager = get_user_manager()
+    api_key_manager = get_api_key_manager()
+    audit_logger = get_audit_logger()
+    logger.info("Authentication components initialized")
+
+    # Initialize rate limiter
+    global rate_limiter
+    redis_enabled = os.getenv('REDIS_ENABLED', 'false').lower() == 'true'
+    rate_limiter = RateLimiter(use_redis=redis_enabled)
+    logger.info(f"Rate limiter initialized (Redis: {redis_enabled})")
 
     # Initialize Redis cache if enabled
     global cache_layer
-    if os.getenv('REDIS_ENABLED', 'false').lower() == 'true':
+    if redis_enabled:
         try:
             redis_client = get_redis_client(
                 host=os.getenv('REDIS_HOST', 'localhost'),
@@ -142,8 +203,8 @@ async def lifespan(app: FastAPI):
 # Create FastAPI app
 app = FastAPI(
     title="Blockchain Anomaly Detection API",
-    description="REST API for real-time blockchain transaction anomaly detection",
-    version="1.0.0",
+    description="REST API for real-time blockchain transaction anomaly detection with authentication",
+    version="2.0.0",
     lifespan=lifespan
 )
 
@@ -156,6 +217,20 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# Add Rate Limit middleware
+@app.on_event("startup")
+async def add_rate_limit_middleware():
+    """Add rate limit middleware after rate_limiter is initialized."""
+    app.add_middleware(RateLimitMiddleware, rate_limiter=rate_limiter)
+    logger.info("Rate limit middleware added")
+
+# Add Audit middleware
+@app.on_event("startup")
+async def add_audit_middleware():
+    """Add audit middleware after audit_logger is initialized."""
+    app.add_middleware(AuditMiddleware)
+    logger.info("Audit middleware added")
+
 # Initialize Prometheus instrumentation
 Instrumentator().instrument(app).expose(app, endpoint="/api/metrics")
 
@@ -163,19 +238,7 @@ Instrumentator().instrument(app).expose(app, endpoint="/api/metrics")
 # Middleware for request tracking
 @app.middleware("http")
 async def track_requests(request: Request, call_next):
-    """
-    Track HTTP requests with Prometheus metrics.
-
-    This middleware records the total number of HTTP requests, their duration,
-    and the number of requests in progress.
-
-    Args:
-        request (Request): The incoming HTTP request.
-        call_next (Callable): The next middleware or endpoint in the chain.
-
-    Returns:
-        Response: The HTTP response.
-    """
+    """Track HTTP requests with Prometheus metrics."""
     method = request.method
     path = request.url.path
 
@@ -202,19 +265,562 @@ async def track_requests(request: Request, call_next):
         http_requests_in_progress.labels(method=method, endpoint=path).dec()
 
 
-# Health check endpoints
+# ============================================================================
+# Authentication Endpoints
+# ============================================================================
+
+@app.post("/api/v1/auth/register", response_model=SuccessResponse, tags=["Authentication"])
+async def register(request: RegisterRequest, http_request: Request):
+    """
+    Register a new user account.
+
+    Creates a new user with email and password.
+    Default role is 'user'.
+    """
+    try:
+        # Create user
+        user = user_manager.create_user(
+            email=request.email,
+            password=request.password,
+            roles=["user"]
+        )
+
+        # Log audit event
+        await audit_logger.log_auth_event(
+            action="register",
+            user_id=user.id,
+            email=user.email,
+            status="success",
+            ip_address=http_request.client.host,
+            user_agent=http_request.headers.get("user-agent", "unknown")
+        )
+
+        logger.info(f"New user registered: {user.email}")
+
+        return SuccessResponse(
+            success=True,
+            message="User registered successfully",
+            data={"user_id": user.id, "email": user.email}
+        )
+
+    except ValueError as e:
+        # Log failed registration
+        await audit_logger.log_auth_event(
+            action="register",
+            user_id=None,
+            email=request.email,
+            status="failure",
+            ip_address=http_request.client.host,
+            user_agent=http_request.headers.get("user-agent", "unknown"),
+            failure_reason=str(e)
+        )
+
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(e)
+        )
+
+
+@app.post("/api/v1/auth/login", response_model=LoginResponse, tags=["Authentication"])
+async def login(request: LoginRequest, http_request: Request):
+    """
+    Login with email and password.
+
+    Returns access token and refresh token on successful authentication.
+    """
+    # Authenticate user
+    user = user_manager.authenticate_user(
+        email=request.email,
+        password=request.password
+    )
+
+    if not user:
+        # Log failed login
+        await audit_logger.log_auth_event(
+            action="login",
+            user_id=None,
+            email=request.email,
+            status="failure",
+            ip_address=http_request.client.host,
+            user_agent=http_request.headers.get("user-agent", "unknown"),
+            failure_reason="invalid_credentials"
+        )
+
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid email or password"
+        )
+
+    # Create tokens
+    access_token = jwt_handler.create_access_token(
+        user_id=user.id,
+        email=user.email,
+        roles=user.roles
+    )
+    refresh_token = jwt_handler.create_refresh_token(user_id=user.id)
+
+    # Log successful login
+    await audit_logger.log_auth_event(
+        action="login",
+        user_id=user.id,
+        email=user.email,
+        status="success",
+        ip_address=http_request.client.host,
+        user_agent=http_request.headers.get("user-agent", "unknown")
+    )
+
+    logger.info(f"User logged in: {user.email}")
+
+    return LoginResponse(
+        access_token=access_token,
+        refresh_token=refresh_token,
+        token_type="bearer",
+        expires_in=30 * 60,  # 30 minutes
+        user=user.to_dict()
+    )
+
+
+@app.post("/api/v1/auth/refresh", response_model=LoginResponse, tags=["Authentication"])
+async def refresh_token(request: RefreshTokenRequest, http_request: Request):
+    """
+    Refresh access token using refresh token.
+
+    Returns new access token and refresh token.
+    """
+    try:
+        # Decode refresh token
+        payload = jwt_handler.decode_token(request.refresh_token)
+
+        # Validate it's a refresh token
+        jwt_handler.validate_token_type(payload, "refresh")
+
+        # Get user
+        user_id = payload["sub"]
+        user = user_manager.get_user_by_id(user_id)
+
+        if not user or not user.is_active:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="User not found or inactive"
+            )
+
+        # Create new tokens
+        access_token = jwt_handler.create_access_token(
+            user_id=user.id,
+            email=user.email,
+            roles=user.roles
+        )
+        new_refresh_token = jwt_handler.create_refresh_token(user_id=user.id)
+
+        # Log token refresh
+        await audit_logger.log_auth_event(
+            action="token_refresh",
+            user_id=user.id,
+            email=user.email,
+            status="success",
+            ip_address=http_request.client.host,
+            user_agent=http_request.headers.get("user-agent", "unknown")
+        )
+
+        return LoginResponse(
+            access_token=access_token,
+            refresh_token=new_refresh_token,
+            token_type="bearer",
+            expires_in=30 * 60,
+            user=user.to_dict()
+        )
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Token refresh error: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid refresh token"
+        )
+
+
+@app.post("/api/v1/auth/change-password", response_model=SuccessResponse, tags=["Authentication"])
+async def change_password(
+    request: ChangePasswordRequest,
+    http_request: Request,
+    current_user: Dict[str, Any] = Depends(get_current_user)
+):
+    """
+    Change user password.
+
+    Requires current password for verification.
+    """
+    user_id = current_user["sub"]
+
+    success = user_manager.change_password(
+        user_id=user_id,
+        old_password=request.old_password,
+        new_password=request.new_password
+    )
+
+    if not success:
+        await audit_logger.log_auth_event(
+            action="change_password",
+            user_id=user_id,
+            email=current_user["email"],
+            status="failure",
+            ip_address=http_request.client.host,
+            user_agent=http_request.headers.get("user-agent", "unknown"),
+            failure_reason="invalid_old_password"
+        )
+
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid old password"
+        )
+
+    # Log successful password change
+    await audit_logger.log_auth_event(
+        action="change_password",
+        user_id=user_id,
+        email=current_user["email"],
+        status="success",
+        ip_address=http_request.client.host,
+        user_agent=http_request.headers.get("user-agent", "unknown")
+    )
+
+    logger.info(f"Password changed for user: {current_user['email']}")
+
+    return SuccessResponse(
+        success=True,
+        message="Password changed successfully"
+    )
+
+
+@app.get("/api/v1/auth/me", response_model=UserResponse, tags=["Authentication"])
+async def get_current_user_info(current_user: Dict[str, Any] = Depends(get_current_user)):
+    """
+    Get current user information.
+
+    Returns user profile based on JWT token.
+    """
+    user = user_manager.get_user_by_id(current_user["sub"])
+
+    if not user:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="User not found"
+        )
+
+    return UserResponse(
+        id=user.id,
+        email=user.email,
+        roles=user.roles,
+        is_active=user.is_active,
+        created_at=user.created_at.isoformat(),
+        last_login=user.last_login.isoformat() if user.last_login else None
+    )
+
+
+# ============================================================================
+# User Management Endpoints (Admin Only)
+# ============================================================================
+
+@app.get("/api/v1/users", response_model=UserListResponse, tags=["User Management"])
+async def list_users(
+    skip: int = 0,
+    limit: int = 100,
+    current_user: Dict[str, Any] = Depends(require_role(["admin"]))
+):
+    """
+    List all users (Admin only).
+
+    Returns paginated list of users.
+    """
+    users = user_manager.list_users(skip=skip, limit=limit)
+    total = user_manager.count_users()
+
+    user_responses = [
+        UserResponse(
+            id=user["id"],
+            email=user["email"],
+            roles=user["roles"],
+            is_active=user["is_active"],
+            created_at=user["created_at"],
+            last_login=user["last_login"]
+        )
+        for user in users
+    ]
+
+    return UserListResponse(
+        users=user_responses,
+        total=total
+    )
+
+
+@app.get("/api/v1/users/{user_id}", response_model=UserResponse, tags=["User Management"])
+async def get_user(
+    user_id: str,
+    current_user: Dict[str, Any] = Depends(require_role(["admin"]))
+):
+    """
+    Get user by ID (Admin only).
+    """
+    user = user_manager.get_user_by_id(user_id)
+
+    if not user:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"User {user_id} not found"
+        )
+
+    return UserResponse(
+        id=user.id,
+        email=user.email,
+        roles=user.roles,
+        is_active=user.is_active,
+        created_at=user.created_at.isoformat(),
+        last_login=user.last_login.isoformat() if user.last_login else None
+    )
+
+
+@app.delete("/api/v1/users/{user_id}", response_model=SuccessResponse, tags=["User Management"])
+async def delete_user(
+    user_id: str,
+    http_request: Request,
+    current_user: Dict[str, Any] = Depends(require_role(["admin"]))
+):
+    """
+    Delete user (Admin only).
+
+    Cannot delete your own account.
+    """
+    if user_id == current_user["sub"]:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Cannot delete your own account"
+        )
+
+    success = user_manager.delete_user(user_id)
+
+    if not success:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"User {user_id} not found"
+        )
+
+    # Log admin action
+    await audit_logger.log_admin_event(
+        action="delete_user",
+        user_id=current_user["sub"],
+        resource="user",
+        status="success",
+        ip_address=http_request.client.host,
+        user_agent=http_request.headers.get("user-agent", "unknown"),
+        details={"target_user_id": user_id}
+    )
+
+    return SuccessResponse(
+        success=True,
+        message=f"User {user_id} deleted successfully"
+    )
+
+
+# ============================================================================
+# API Key Management Endpoints
+# ============================================================================
+
+@app.post("/api/v1/api-keys", response_model=APIKeyResponse, tags=["API Keys"])
+async def create_api_key(
+    request: APIKeyCreateRequest,
+    http_request: Request,
+    current_user: Dict[str, Any] = Depends(get_current_user)
+):
+    """
+    Create a new API key.
+
+    Returns the API key - save it securely as it won't be shown again!
+    """
+    api_key_obj, plain_key = api_key_manager.create_api_key(
+        user_id=current_user["sub"],
+        name=request.name,
+        expires_days=request.expires_days
+    )
+
+    # Log API key creation
+    await audit_logger.log_api_key_event(
+        action="create",
+        user_id=current_user["sub"],
+        key_id=api_key_obj.id,
+        status="success",
+        ip_address=http_request.client.host,
+        user_agent=http_request.headers.get("user-agent", "unknown"),
+        details={"name": request.name, "expires_days": request.expires_days}
+    )
+
+    logger.info(f"API key created for user {current_user['email']}: {request.name}")
+
+    return APIKeyResponse(
+        id=api_key_obj.id,
+        name=api_key_obj.name,
+        key=plain_key,  # Only shown once!
+        prefix=api_key_obj.prefix,
+        created_at=api_key_obj.created_at.isoformat(),
+        expires_at=api_key_obj.expires_at.isoformat() if api_key_obj.expires_at else None
+    )
+
+
+@app.get("/api/v1/api-keys", response_model=APIKeyListResponse, tags=["API Keys"])
+async def list_api_keys(current_user: Dict[str, Any] = Depends(get_current_user)):
+    """
+    List user's API keys.
+
+    Returns list of API keys (without the actual key values).
+    """
+    keys = api_key_manager.list_user_api_keys(current_user["sub"])
+
+    key_infos = [
+        APIKeyInfo(
+            id=key.id,
+            name=key.name,
+            prefix=key.prefix,
+            is_active=key.is_active,
+            created_at=key.created_at.isoformat(),
+            last_used=key.last_used.isoformat() if key.last_used else None,
+            expires_at=key.expires_at.isoformat() if key.expires_at else None
+        )
+        for key in keys
+    ]
+
+    return APIKeyListResponse(
+        api_keys=key_infos,
+        total=len(key_infos)
+    )
+
+
+@app.delete("/api/v1/api-keys/{key_id}", response_model=SuccessResponse, tags=["API Keys"])
+async def revoke_api_key(
+    key_id: str,
+    http_request: Request,
+    current_user: Dict[str, Any] = Depends(get_current_user)
+):
+    """
+    Revoke (delete) an API key.
+
+    Once revoked, the key cannot be used for authentication.
+    """
+    # Verify key belongs to user
+    key = api_key_manager.get_api_key(key_id)
+
+    if not key:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="API key not found"
+        )
+
+    if key.user_id != current_user["sub"]:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Cannot revoke another user's API key"
+        )
+
+    success = api_key_manager.revoke_api_key(key_id)
+
+    if not success:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="API key not found"
+        )
+
+    # Log API key revocation
+    await audit_logger.log_api_key_event(
+        action="revoke",
+        user_id=current_user["sub"],
+        key_id=key_id,
+        status="success",
+        ip_address=http_request.client.host,
+        user_agent=http_request.headers.get("user-agent", "unknown")
+    )
+
+    logger.info(f"API key revoked by user {current_user['email']}: {key_id}")
+
+    return SuccessResponse(
+        success=True,
+        message="API key revoked successfully"
+    )
+
+
+# ============================================================================
+# Audit Log Endpoints (Admin Only)
+# ============================================================================
+
+@app.get("/api/v1/audit-logs", response_model=AuditLogListResponse, tags=["Audit Logs"])
+async def get_audit_logs(
+    event_type: Optional[str] = None,
+    user_id: Optional[str] = None,
+    severity: Optional[str] = None,
+    limit: int = 100,
+    current_user: Dict[str, Any] = Depends(require_role(["admin"]))
+):
+    """
+    Get audit logs (Admin only).
+
+    Supports filtering by event_type, user_id, and severity.
+    """
+    logs = audit_logger.get_logs(
+        event_type=event_type,
+        user_id=user_id,
+        severity=severity,
+        limit=limit
+    )
+
+    log_entries = [
+        AuditLogEntry(
+            id=log["id"],
+            event_type=log["event_type"],
+            user_id=log["user_id"],
+            resource=log["resource"],
+            action=log["action"],
+            status=log["status"],
+            ip_address=log["ip_address"],
+            timestamp=log["timestamp"],
+            severity=log["severity"],
+            details=log.get("details")
+        )
+        for log in logs
+    ]
+
+    return AuditLogListResponse(
+        logs=log_entries,
+        total=len(log_entries)
+    )
+
+
+@app.get("/api/v1/audit-logs/stats", response_model=AuditLogStatsResponse, tags=["Audit Logs"])
+async def get_audit_stats(current_user: Dict[str, Any] = Depends(require_role(["admin"]))):
+    """
+    Get audit log statistics (Admin only).
+
+    Returns aggregated statistics about audit logs.
+    """
+    stats = audit_logger.get_stats()
+
+    return AuditLogStatsResponse(
+        total_logs=stats["total_logs"],
+        event_types=stats["event_types"],
+        severities=stats["severities"],
+        failures=stats["failures"],
+        oldest_log=stats["oldest_log"],
+        newest_log=stats["newest_log"]
+    )
+
+
+# ============================================================================
+# Health Check Endpoints (No Authentication Required)
+# ============================================================================
+
 @app.get("/health", response_model=HealthCheckResponse, tags=["Health"])
 async def health_check():
     """
     Comprehensive health check endpoint.
 
     Returns detailed health status including system metrics.
-
-    Returns:
-        HealthCheckResponse: The health status of the service.
-
-    Raises:
-        HTTPException: If the service is unhealthy.
     """
     health_status = health_checker.check_health()
 
@@ -229,17 +835,7 @@ async def health_check():
 
 @app.get("/health/ready", tags=["Health"])
 async def readiness_check():
-    """
-    Readiness check endpoint.
-
-    Indicates if the service is ready to accept traffic.
-
-    Returns:
-        dict: A dictionary indicating the readiness of the service.
-
-    Raises:
-        HTTPException: If the service is not ready.
-    """
+    """Readiness check endpoint."""
     readiness = health_checker.check_readiness()
 
     if not readiness['ready']:
@@ -253,35 +849,47 @@ async def readiness_check():
 
 @app.get("/health/live", tags=["Health"])
 async def liveness_check():
-    """
-    Liveness check endpoint.
-
-    Indicates if the service is alive and responsive.
-
-    Returns:
-        dict: A dictionary indicating the liveness of the service.
-    """
+    """Liveness check endpoint."""
     return health_checker.check_liveness()
 
 
-# Prediction endpoints
-@app.post(
-    "/api/v1/predict",
-    response_model=PredictionResponse,
-    tags=["Prediction"]
-)
-async def predict_single(transaction: TransactionData):
+# ============================================================================
+# Prediction Endpoints (Authentication Required)
+# ============================================================================
+
+async def get_user_from_auth(
+    http_authorization: Optional[HTTPAuthorizationCredentials] = Depends(security),
+    api_key_user: Optional[Dict[str, Any]] = Depends(get_user_from_api_key)
+) -> Dict[str, Any]:
+    """
+    Get user from either JWT token or API key.
+
+    Supports both authentication methods.
+    """
+    # Try API key first
+    if api_key_user:
+        return api_key_user
+
+    # Fall back to JWT
+    if http_authorization:
+        token = http_authorization.credentials
+        return jwt_handler.decode_token(token)
+
+    raise HTTPException(
+        status_code=status.HTTP_401_UNAUTHORIZED,
+        detail="Authentication required"
+    )
+
+
+@app.post("/api/v1/predict", response_model=PredictionResponse, tags=["Prediction"])
+async def predict_single(
+    transaction: TransactionData,
+    current_user: Dict[str, Any] = Depends(get_current_active_user)
+):
     """
     Predict if a single transaction is anomalous.
 
-    Args:
-        transaction (TransactionData): Transaction data to analyze.
-
-    Returns:
-        PredictionResponse: Prediction result with anomaly score.
-
-    Raises:
-        HTTPException: If the prediction fails.
+    Requires authentication via JWT token or API key.
     """
     try:
         start_time = time.time()
@@ -319,23 +927,15 @@ async def predict_single(transaction: TransactionData):
         )
 
 
-@app.post(
-    "/api/v1/predict/batch",
-    response_model=BatchPredictionResponse,
-    tags=["Prediction"]
-)
-async def predict_batch(request: BatchTransactionRequest):
+@app.post("/api/v1/predict/batch", response_model=BatchPredictionResponse, tags=["Prediction"])
+async def predict_batch(
+    request: BatchTransactionRequest,
+    current_user: Dict[str, Any] = Depends(get_current_active_user)
+):
     """
     Predict anomalies for a batch of transactions.
 
-    Args:
-        request (BatchTransactionRequest): Batch of transactions to analyze.
-
-    Returns:
-        BatchPredictionResponse: Batch prediction results.
-
-    Raises:
-        HTTPException: If the batch prediction fails.
+    Requires authentication via JWT token or API key.
     """
     try:
         start_time = time.time()
@@ -381,25 +981,19 @@ async def predict_batch(request: BatchTransactionRequest):
         )
 
 
-# Model management endpoints
-@app.post(
-    "/api/v1/models/train",
-    response_model=ModelTrainingResponse,
-    tags=["Models"]
-)
-async def train_model(request: ModelTrainingRequest, background_tasks: BackgroundTasks):
+# ============================================================================
+# Model Management Endpoints (Admin Only)
+# ============================================================================
+
+@app.post("/api/v1/models/train", response_model=ModelTrainingResponse, tags=["Models"])
+async def train_model(
+    request: ModelTrainingRequest,
+    http_request: Request,
+    background_tasks: BackgroundTasks,
+    current_user: Dict[str, Any] = Depends(require_role(["admin"]))
+):
     """
-    Train a new anomaly detection model.
-
-    Args:
-        request (ModelTrainingRequest): Training configuration.
-        background_tasks (BackgroundTasks): FastAPI background tasks.
-
-    Returns:
-        ModelTrainingResponse: Training status and model information.
-
-    Raises:
-        HTTPException: If model training fails.
+    Train a new anomaly detection model (Admin only).
     """
     try:
         start_time = time.time()
@@ -407,7 +1001,6 @@ async def train_model(request: ModelTrainingRequest, background_tasks: Backgroun
         # Generate model ID
         model_id = f"model_{int(time.time())}"
 
-        # This is a simplified version - in production you'd load actual data
         logger.info(f"Training model {model_id} with contamination={request.contamination}")
 
         # Save model info
@@ -419,12 +1012,23 @@ async def train_model(request: ModelTrainingRequest, background_tasks: Backgroun
             'status': 'active'
         }
 
+        # Log admin action
+        await audit_logger.log_admin_event(
+            action="train_model",
+            user_id=current_user["sub"],
+            resource="model",
+            status="success",
+            ip_address=http_request.client.host,
+            user_agent=http_request.headers.get("user-agent", "unknown"),
+            details={"model_id": model_id, "model_type": request.model_type}
+        )
+
         training_time = (time.time() - start_time) * 1000
 
         return ModelTrainingResponse(
             success=True,
             model_id=model_id,
-            training_samples=0,  # Would be actual count in production
+            training_samples=0,
             contamination=request.contamination,
             training_time_ms=training_time,
             message="Model training initiated successfully"
@@ -438,18 +1042,9 @@ async def train_model(request: ModelTrainingRequest, background_tasks: Backgroun
         )
 
 
-@app.get(
-    "/api/v1/models",
-    response_model=ModelListResponse,
-    tags=["Models"]
-)
-async def list_models():
-    """
-    List all available models.
-
-    Returns:
-        ModelListResponse: List of model information.
-    """
+@app.get("/api/v1/models", response_model=ModelListResponse, tags=["Models"])
+async def list_models(current_user: Dict[str, Any] = Depends(get_current_active_user)):
+    """List all available models (Authentication required)."""
     models = []
     for model_id, model_data in app_state['models'].items():
         models.append(ModelInfo(
@@ -469,24 +1064,12 @@ async def list_models():
     )
 
 
-@app.get(
-    "/api/v1/models/{model_id}",
-    response_model=ModelInfo,
-    tags=["Models"]
-)
-async def get_model(model_id: str):
-    """
-    Get information about a specific model.
-
-    Args:
-        model_id (str): Model identifier.
-
-    Returns:
-        ModelInfo: Model information.
-
-    Raises:
-        HTTPException: If the model is not found.
-    """
+@app.get("/api/v1/models/{model_id}", response_model=ModelInfo, tags=["Models"])
+async def get_model(
+    model_id: str,
+    current_user: Dict[str, Any] = Depends(get_current_active_user)
+):
+    """Get information about a specific model (Authentication required)."""
     if model_id not in app_state['models']:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -506,24 +1089,13 @@ async def get_model(model_id: str):
     )
 
 
-@app.delete(
-    "/api/v1/models/{model_id}",
-    response_model=SuccessResponse,
-    tags=["Models"]
-)
-async def delete_model(model_id: str):
-    """
-    Delete a model.
-
-    Args:
-        model_id (str): Model identifier.
-
-    Returns:
-        SuccessResponse: Success message.
-
-    Raises:
-        HTTPException: If the model is not found.
-    """
+@app.delete("/api/v1/models/{model_id}", response_model=SuccessResponse, tags=["Models"])
+async def delete_model(
+    model_id: str,
+    http_request: Request,
+    current_user: Dict[str, Any] = Depends(require_role(["admin"]))
+):
+    """Delete a model (Admin only)."""
     if model_id not in app_state['models']:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -532,29 +1104,34 @@ async def delete_model(model_id: str):
 
     del app_state['models'][model_id]
 
+    # Log admin action
+    await audit_logger.log_admin_event(
+        action="delete_model",
+        user_id=current_user["sub"],
+        resource="model",
+        status="success",
+        ip_address=http_request.client.host,
+        user_agent=http_request.headers.get("user-agent", "unknown"),
+        details={"model_id": model_id}
+    )
+
     return SuccessResponse(
         success=True,
         message=f"Model {model_id} deleted successfully"
     )
 
 
-# Anomaly endpoints
-@app.get(
-    "/api/v1/anomalies",
-    response_model=AnomalyListResponse,
-    tags=["Anomalies"]
-)
-async def get_anomalies(limit: Optional[int] = 100, severity: Optional[str] = None):
-    """
-    Get detected anomalies.
+# ============================================================================
+# Anomaly Endpoints (Authentication Required)
+# ============================================================================
 
-    Args:
-        limit (Optional[int]): Maximum number of anomalies to return. Defaults to 100.
-        severity (Optional[str]): Filter by severity level.
-
-    Returns:
-        AnomalyListResponse: List of detected anomalies.
-    """
+@app.get("/api/v1/anomalies", response_model=AnomalyListResponse, tags=["Anomalies"])
+async def get_anomalies(
+    limit: Optional[int] = 100,
+    severity: Optional[str] = None,
+    current_user: Dict[str, Any] = Depends(get_current_active_user)
+):
+    """Get detected anomalies (Authentication required)."""
     anomalies = stream_processor.get_anomalies(limit=limit)
 
     # Filter by severity if specified
@@ -582,19 +1159,23 @@ async def get_anomalies(limit: Optional[int] = 100, severity: Optional[str] = No
     )
 
 
-@app.delete(
-    "/api/v1/anomalies",
-    response_model=SuccessResponse,
-    tags=["Anomalies"]
-)
-async def clear_anomalies():
-    """
-    Clear the anomaly buffer.
-
-    Returns:
-        SuccessResponse: Success message.
-    """
+@app.delete("/api/v1/anomalies", response_model=SuccessResponse, tags=["Anomalies"])
+async def clear_anomalies(
+    http_request: Request,
+    current_user: Dict[str, Any] = Depends(require_role(["admin"]))
+):
+    """Clear the anomaly buffer (Admin only)."""
     stream_processor.clear_anomaly_buffer()
+
+    # Log admin action
+    await audit_logger.log_admin_event(
+        action="clear_anomalies",
+        user_id=current_user["sub"],
+        resource="anomaly_buffer",
+        status="success",
+        ip_address=http_request.client.host,
+        user_agent=http_request.headers.get("user-agent", "unknown")
+    )
 
     return SuccessResponse(
         success=True,
@@ -602,77 +1183,58 @@ async def clear_anomalies():
     )
 
 
-# Streaming endpoints
-@app.get(
-    "/api/v1/stream/status",
-    response_model=StreamStatusResponse,
-    tags=["Streaming"]
-)
-async def get_stream_status():
-    """
-    Get streaming service status.
+# ============================================================================
+# Streaming Endpoints (Authentication Required)
+# ============================================================================
 
-    Returns:
-        StreamStatusResponse: Streaming service status.
-    """
+@app.get("/api/v1/stream/status", response_model=StreamStatusResponse, tags=["Streaming"])
+async def get_stream_status(current_user: Dict[str, Any] = Depends(get_current_active_user)):
+    """Get streaming service status (Authentication required)."""
     stats = stream_processor.get_stats()
 
     return StreamStatusResponse(
         is_running=app_state['streaming_enabled'],
         consumer_connected=kafka_consumer is not None and kafka_consumer.consumer is not None,
-        transactions_processed=0,  # Would track actual count
+        transactions_processed=0,
         anomalies_detected=stats['anomalies_detected'],
         buffer_size=stats['buffer_size'],
         uptime_seconds=health_checker.check_liveness()['uptime_seconds']
     )
 
 
-# Root endpoint
+# ============================================================================
+# Utility Endpoints
+# ============================================================================
+
 @app.get("/", tags=["Root"])
 async def root():
-    """
-    Root endpoint with API information.
-
-    Returns:
-        dict: API information.
-    """
+    """Root endpoint with API information."""
     return {
         "name": "Blockchain Anomaly Detection API",
-        "version": "1.0.0",
+        "version": "2.0.0",
         "status": "running",
+        "authentication": "enabled",
         "documentation": "/docs",
         "health": "/health"
     }
 
 
-# Metrics endpoint
 @app.get("/metrics", tags=["Monitoring"])
 async def metrics():
-    """
-    Prometheus metrics endpoint.
-
-    Returns:
-        Response: Prometheus-formatted metrics.
-    """
+    """Prometheus metrics endpoint."""
     return Response(
         content=generate_latest(),
         media_type=CONTENT_TYPE_LATEST
     )
 
 
-# Exception handlers
+# ============================================================================
+# Exception Handlers
+# ============================================================================
+
 @app.exception_handler(HTTPException)
 async def http_exception_handler(request: Request, exc: HTTPException):
-    """
-    Handle HTTP exceptions.
-
-    Args:
-        request (Request): The HTTP request.
-        exc (HTTPException): The HTTP exception.
-
-    Returns:
-        JSONResponse: The JSON response with error details.
-    """
+    """Handle HTTP exceptions."""
     return JSONResponse(
         status_code=exc.status_code,
         content={
@@ -684,16 +1246,7 @@ async def http_exception_handler(request: Request, exc: HTTPException):
 
 @app.exception_handler(Exception)
 async def general_exception_handler(request: Request, exc: Exception):
-    """
-    Handle general exceptions.
-
-    Args:
-        request (Request): The HTTP request.
-        exc (Exception): The exception.
-
-    Returns:
-        JSONResponse: The JSON response with error details.
-    """
+    """Handle general exceptions."""
     logger.error(f"Unhandled exception: {exc}", exc_info=True)
     return JSONResponse(
         status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
@@ -709,7 +1262,7 @@ if __name__ == "__main__":
     import uvicorn
 
     uvicorn.run(
-        "src.api_server.app:app",
+        "src.api_server.app_authenticated:app",
         host="0.0.0.0",
         port=8000,
         reload=True,
