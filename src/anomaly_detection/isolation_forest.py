@@ -118,9 +118,13 @@ class AnomalyDetectorIsolationForest:
 
         :return: DataFrame with an additional 'anomaly' column indicating normal or anomalous transactions.
         :raises RuntimeError: If anomaly detection fails.
-        :raises ValueError: If model hasn't been trained yet.
+        :raises ValueError: If model hasn't been trained yet or DataFrame is not available.
         """
         try:
+            # Check if DataFrame is available
+            if self.df is None or self.features is None:
+                raise ValueError("DataFrame not available. Initialize with DataFrame or call train_model() with DataFrame first.")
+
             # Check if model has been trained
             if not hasattr(self.model, 'estimators_'):
                 raise ValueError("Model must be trained before detecting anomalies. Call train_model() first.")
@@ -142,10 +146,14 @@ class AnomalyDetectorIsolationForest:
         Returns the subset of the dataset that contains only the anomalous transactions.
 
         :return: DataFrame containing only anomalous transactions.
-        :raises ValueError: If anomaly detection hasn't been performed yet.
+        :raises ValueError: If anomaly detection hasn't been performed yet or DataFrame is not available.
         :raises RuntimeError: If retrieval fails.
         """
         try:
+            # Check if DataFrame is available
+            if self.df is None:
+                raise ValueError("DataFrame not available. Initialize with DataFrame or call train_model() with DataFrame first.")
+
             if 'anomaly' not in self.df.columns:
                 raise ValueError("Anomaly column not found. Run detect_anomalies() first.")
 

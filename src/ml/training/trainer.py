@@ -60,7 +60,7 @@ class ModelTrainer:
         self.model_version_repo = ModelVersionRepository(db_session)
         self.storage = ModelStorage()
 
-    async def train_isolation_forest(
+    def train_isolation_forest(
         self,
         model_name: str,
         start_date: Optional[datetime] = None,
