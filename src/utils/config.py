@@ -90,6 +90,12 @@ class Config:
         self.DATABASE_POOL_TIMEOUT = int(os.getenv("DATABASE_POOL_TIMEOUT", "30"))
         self.DATABASE_POOL_RECYCLE = int(os.getenv("DATABASE_POOL_RECYCLE", "3600"))
 
+        # Model Storage Configuration
+        self.MODEL_STORAGE_TYPE = os.getenv("MODEL_STORAGE_TYPE", "local").lower()  # local, s3, gcs
+        self.MODEL_STORAGE_PATH = os.getenv("MODEL_STORAGE_PATH", "./models")
+        self.S3_BUCKET = os.getenv("S3_BUCKET", "")
+        self.GCS_BUCKET = os.getenv("GCS_BUCKET", "")
+
     def validate(self) -> bool:
         """
         Validates that the required configuration values are set.

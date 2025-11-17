@@ -25,6 +25,10 @@ class ModelRepository(BaseRepository[Model]):
         """Get models by type."""
         return self.db.query(Model).filter(Model.model_type == model_type).all()
 
+    def get_by_name(self, name: str) -> Optional[Model]:
+        """Get model by name."""
+        return self.db.query(Model).filter(Model.name == name).first()
+
 
 class ModelVersionRepository(BaseRepository[ModelVersion]):
     """Repository for model versions."""
@@ -52,4 +56,8 @@ class ModelVersionRepository(BaseRepository[ModelVersion]):
             .filter(ModelVersion.model_id == model_id)\
             .order_by(ModelVersion.created_at.desc())\
             .first()
+
+    def get_by_model_id(self, model_id: str) -> List[ModelVersion]:
+        """Get all versions for a model (alias for get_by_model)."""
+        return self.get_by_model(model_id)
 

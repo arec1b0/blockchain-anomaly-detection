@@ -20,30 +20,16 @@ class AnomalyDetectorIsolationForest:
     AnomalyDetectorIsolationForest uses the Isolation Forest algorithm to detect anomalies in transaction data.
     """
 
-    def __init__(self, df: pd.DataFrame, contamination: float = 0.01, random_state: int = 42):
+    def __init__(self, df: pd.DataFrame = None, contamination: float = 0.01, random_state: int = 42):
         """
         Initializes the anomaly detection model with the provided data.
 
-        :param df: DataFrame containing the transaction data.
+        :param df: DataFrame containing the transaction data (optional, can be provided later).
         :param contamination: The proportion of outliers in the data set (default is 1%).
         :param random_state: Seed for the random number generator to ensure reproducibility.
-        :raises ValueError: If df is None, empty, or missing required columns.
+        :raises ValueError: If df is provided but None, empty, or missing required columns.
         :raises TypeError: If df is not a pandas DataFrame or parameters are of incorrect type.
         """
-        # Validate DataFrame
-        if df is None:
-            raise ValueError("DataFrame cannot be None")
-        if not isinstance(df, pd.DataFrame):
-            raise TypeError(f"Expected pandas DataFrame, got {type(df).__name__}")
-        if len(df) == 0:
-            raise ValueError("DataFrame cannot be empty")
-
-        # Validate required columns
-        required_columns = ['value', 'gas', 'gasPrice']
-        missing_columns = [col for col in required_columns if col not in df.columns]
-        if missing_columns:
-            raise ValueError(f"DataFrame must contain the following columns: {missing_columns}")
-
         # Validate contamination parameter
         if not isinstance(contamination, (int, float)):
             raise TypeError(f"contamination must be numeric, got {type(contamination).__name__}")
@@ -54,31 +40,74 @@ class AnomalyDetectorIsolationForest:
         if not isinstance(random_state, int):
             raise TypeError(f"random_state must be an integer, got {type(random_state).__name__}")
 
-        self.df = df.copy()  # Create a copy to avoid modifying the original
         self.contamination = contamination
         self.random_state = random_state
 
+        # Initialize model
         try:
             self.model = IsolationForest(contamination=self.contamination,
                                          random_state=self.random_state)
-            self.features = self.df[['value', 'gas', 'gasPrice']]  # Select features for analysis
-            logger.info(f"AnomalyDetectorIsolationForest initialized with {len(self.df)} rows, contamination={contamination}")
         except Exception as e:
             logger.error(f"Error initializing Isolation Forest model: {e}")
             raise RuntimeError(f"Failed to initialize Isolation Forest model: {e}") from e
 
-    def train_model(self):
+        # If DataFrame provided, validate and set it up
+        if df is not None:
+            if not isinstance(df, pd.DataFrame):
+                raise TypeError(f"Expected pandas DataFrame, got {type(df).__name__}")
+            if len(df) == 0:
+                raise ValueError("DataFrame cannot be empty")
+
+            # Validate required columns
+            required_columns = ['value', 'gas', 'gasPrice']
+            missing_columns = [col for col in required_columns if col not in df.columns]
+            if missing_columns:
+                raise ValueError(f"DataFrame must contain the following columns: {missing_columns}")
+
+            self.df = df.copy()  # Create a copy to avoid modifying the original
+            self.features = self.df[['value', 'gas', 'gasPrice']]  # Select features for analysis
+            logger.info(f"AnomalyDetectorIsolationForest initialized with {len(self.df)} rows, contamination={contamination}")
+        else:
+            self.df = None
+            self.features = None
+            logger.info(f"AnomalyDetectorIsolationForest initialized without DataFrame, contamination={contamination}")
+
+    def train_model(self, df: pd.DataFrame = None):
         """
         Trains the Isolation Forest model on the selected features of the dataset.
 
+        :param df: Optional DataFrame to train on. If provided, updates self.df and self.features.
         :return: Trained Isolation Forest model.
         :raises RuntimeError: If model training fails.
+        :raises ValueError: If no DataFrame is available for training.
         """
         try:
-            logger.info("Training Isolation Forest model...")
+            # If DataFrame provided, use it
+            if df is not None:
+                if not isinstance(df, pd.DataFrame):
+                    raise TypeError(f"Expected pandas DataFrame, got {type(df).__name__}")
+                if len(df) == 0:
+                    raise ValueError("DataFrame cannot be empty")
+
+                # Validate required columns
+                required_columns = ['value', 'gas', 'gasPrice']
+                missing_columns = [col for col in required_columns if col not in df.columns]
+                if missing_columns:
+                    raise ValueError(f"DataFrame must contain the following columns: {missing_columns}")
+
+                self.df = df.copy()
+                self.features = self.df[['value', 'gas', 'gasPrice']]
+
+            # Check if features are available
+            if self.features is None:
+                raise ValueError("No DataFrame available for training. Provide df parameter or initialize with DataFrame.")
+
+            logger.info(f"Training Isolation Forest model on {len(self.features)} samples...")
             self.model.fit(self.features)
             logger.info("Model training completed.")
             return self.model
+        except (ValueError, TypeError):
+            raise
         except Exception as e:
             logger.error(f"Error training Isolation Forest model: {e}")
             raise RuntimeError(f"Failed to train Isolation Forest model: {e}") from e
