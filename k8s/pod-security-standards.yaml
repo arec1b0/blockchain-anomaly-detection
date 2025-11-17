@@ -1,0 +1,168 @@
+# Pod Security Standards for Production
+# Enforces restricted security policies on pods
+
+---
+# Namespace label for Pod Security Standards
+# This enforces the "restricted" Pod Security Standard
+# Apply with: kubectl label namespace blockchain-anomaly-prod pod-security.kubernetes.io/enforce=restricted
+
+# NOTE: Pod Security Policies (PSP) are deprecated in Kubernetes 1.25+
+# Use Pod Security Standards instead (namespace labels)
+
+# For reference, here's what the restricted standard enforces:
+# - No privilege escalation
+# - No privileged containers
+# - No host network/PID/IPC
+# - Limited volume types
+# - Required securityContext fields
+# - No capabilities beyond NET_BIND_SERVICE
+
+# To apply Pod Security Standards to the namespace:
+# kubectl label namespace blockchain-anomaly-prod \
+#   pod-security.kubernetes.io/enforce=restricted \
+#   pod-security.kubernetes.io/audit=restricted \
+#   pod-security.kubernetes.io/warn=restricted
+
+---
+# Security Context Constraints Example
+# This shows how to properly configure security contexts in deployments
+
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: security-context-example
+  namespace: blockchain-anomaly-prod
+data:
+  example.yaml: |
+    # Example of proper security context configuration
+    apiVersion: apps/v1
+    kind: Deployment
+    metadata:
+      name: secure-app
+    spec:
+      template:
+        spec:
+          # Pod-level security context
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 1000
+            fsGroup: 1000
+            seccompProfile:
+              type: RuntimeDefault
+
+          containers:
+          - name: app
+            image: app:latest
+
+            # Container-level security context
+            securityContext:
+              allowPrivilegeEscalation: false
+              readOnlyRootFilesystem: true
+              runAsNonRoot: true
+              runAsUser: 1000
+              capabilities:
+                drop:
+                  - ALL
+                add:
+                  - NET_BIND_SERVICE  # Only if needed for ports < 1024
+
+            # Resource requests and limits (required)
+            resources:
+              requests:
+                cpu: 100m
+                memory: 128Mi
+              limits:
+                cpu: 1000m
+                memory: 512Mi
+
+            # Probes (required for production)
+            livenessProbe:
+              httpGet:
+                path: /health/live
+                port: 8000
+              initialDelaySeconds: 30
+              periodSeconds: 10
+
+            readinessProbe:
+              httpGet:
+                path: /health/ready
+                port: 8000
+              initialDelaySeconds: 5
+              periodSeconds: 5
+
+---
+# Service Account for API with minimal permissions
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: api-service-account
+  namespace: blockchain-anomaly-prod
+automountServiceAccountToken: false  # Don't auto-mount unless needed
+
+---
+# Service Account for Consumer
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: consumer-service-account
+  namespace: blockchain-anomaly-prod
+automountServiceAccountToken: false
+
+---
+# RBAC Role for API (read-only cluster info)
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: api-role
+  namespace: blockchain-anomaly-prod
+rules:
+- apiGroups: [""]
+  resources: ["configmaps"]
+  verbs: ["get", "list", "watch"]
+- apiGroups: [""]
+  resources: ["secrets"]
+  verbs: ["get"]
+
+---
+# RBAC RoleBinding for API
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: api-role-binding
+  namespace: blockchain-anomaly-prod
+subjects:
+- kind: ServiceAccount
+  name: api-service-account
+  namespace: blockchain-anomaly-prod
+roleRef:
+  kind: Role
+  name: api-role
+  apiGroup: rbac.authorization.k8s.io
+
+---
+# RBAC Role for Consumer
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: consumer-role
+  namespace: blockchain-anomaly-prod
+rules:
+- apiGroups: [""]
+  resources: ["configmaps"]
+  verbs: ["get", "list", "watch"]
+
+---
+# RBAC RoleBinding for Consumer
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: consumer-role-binding
+  namespace: blockchain-anomaly-prod
+subjects:
+- kind: ServiceAccount
+  name: consumer-service-account
+  namespace: blockchain-anomaly-prod
+roleRef:
+  kind: Role
+  name: consumer-role
+  apiGroup: rbac.authorization.k8s.io

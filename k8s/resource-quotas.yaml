@@ -1,0 +1,83 @@
+# Resource Quotas for Production Namespace
+# Prevents resource exhaustion and ensures fair allocation
+
+---
+apiVersion: v1
+kind: ResourceQuota
+metadata:
+  name: compute-resources
+  namespace: blockchain-anomaly-prod
+spec:
+  hard:
+    # Maximum pods
+    pods: "100"
+
+    # CPU limits
+    requests.cpu: "50"
+    limits.cpu: "100"
+
+    # Memory limits
+    requests.memory: "100Gi"
+    limits.memory: "200Gi"
+
+    # Storage limits
+    requests.storage: "1Ti"
+    persistentvolumeclaims: "20"
+
+    # Service limits
+    services.loadbalancers: "2"
+    services.nodeports: "0" # Disable NodePort for security
+
+---
+apiVersion: v1
+kind: ResourceQuota
+metadata:
+  name: object-counts
+  namespace: blockchain-anomaly-prod
+spec:
+  hard:
+    # Limit number of objects
+    configmaps: "50"
+    secrets: "50"
+    services: "20"
+    replicationcontrollers: "0" # Use Deployments instead
+
+---
+# Limit Range - Default resource requests and limits for pods
+apiVersion: v1
+kind: LimitRange
+metadata:
+  name: resource-limits
+  namespace: blockchain-anomaly-prod
+spec:
+  limits:
+  # Container limits
+  - type: Container
+    max:
+      cpu: "8"
+      memory: "16Gi"
+    min:
+      cpu: "100m"
+      memory: "128Mi"
+    default:
+      cpu: "1"
+      memory: "2Gi"
+    defaultRequest:
+      cpu: "500m"
+      memory: "1Gi"
+    maxLimitRequestRatio:
+      cpu: "4"
+      memory: "4"
+
+  # Pod limits
+  - type: Pod
+    max:
+      cpu: "16"
+      memory: "32Gi"
+
+  # PersistentVolumeClaim limits
+  - type: PersistentVolumeClaim
+    min:
+      storage: "1Gi"
+    max:
+      storage: "500Gi"
