@@ -5,7 +5,6 @@ This module handles model loading, caching, and serving for predictions.
 """
 
 import os
-import pickle
 import json
 import tempfile
 from typing import Dict, Any, Optional
@@ -17,6 +16,7 @@ from src.database.repositories.model_repository import ModelVersionRepository
 from src.database.models import ModelVersion
 from src.ml.storage import ModelStorage
 from src.ml.deployment.ab_tester import ABTester
+from src.ml.security.secure_unpickler import SecureModelLoader, ModelIntegrityError
 from src.utils.logger import get_logger
 from src.utils.config import get_config
 
@@ -58,6 +58,7 @@ class ModelManager:
         self.model_version_repo = ModelVersionRepository(db_session)
         self.storage = ModelStorage()
         self.ab_tester = ABTester(db_session)
+        self.secure_loader = SecureModelLoader()
 
         # Model cache: {model_version_id: (model, metadata, load_time)}
         self._cache: Dict[str, tuple] = {}
@@ -144,22 +145,36 @@ class ModelManager:
                 local_dir=tmp_dir
             )
 
-            # Load model pickle
+            # Load model with secure unpickler
             model_file = os.path.join(local_path, 'model.pkl')
+            metadata_file = os.path.join(local_path, 'metadata.json')
+
             if not os.path.exists(model_file):
                 raise FileNotFoundError(f"Model file not found: {model_file}")
 
-            with open(model_file, 'rb') as f:
-                model = pickle.load(f)
+            # Use SecureModelLoader for safe deserialization with integrity verification
+            try:
+                model = self.secure_loader.load_model(
+                    model_file=model_file,
+                    metadata_file=metadata_file if os.path.exists(metadata_file) else None
+                )
+            except ModelIntegrityError as e:
+                logger.error(
+                    f"Model integrity verification failed for {model_version_id}: {e}",
+                    exc_info=True
+                )
+                raise RuntimeError(f"Model integrity verification failed: {e}")
 
-            # Load metadata
-            metadata_file = os.path.join(local_path, 'metadata.json')
+            # Load metadata separately for caching
             metadata = {}
             if os.path.exists(metadata_file):
                 with open(metadata_file, 'r') as f:
                     metadata = json.load(f)
 
-            logger.info(f"Model {model_version_id} loaded successfully")
+            logger.info(
+                f"Model {model_version_id} loaded successfully with security verification",
+                extra={"model_type": type(model).__name__}
+            )
 
             # Cache the model
             if self.cache_enabled:
