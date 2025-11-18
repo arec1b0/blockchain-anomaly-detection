@@ -548,3 +548,237 @@ class AuditLogStatsResponse(BaseModel):
     failures: int
     oldest_log: Optional[str] = None
     newest_log: Optional[str] = None
+
+
+# ============================================================================
+# ML Model Lifecycle Models (Phase 3)
+# ============================================================================
+
+class ModelDeploymentRequest(BaseModel):
+    """
+    Represents a request to deploy a model version.
+
+    Attributes:
+        model_version_id (str): ID of model version to deploy
+        strategy (str): Deployment strategy (shadow, canary, blue_green, full)
+        initial_traffic (Optional[float]): Initial traffic percentage (0-100)
+    """
+    model_version_id: str
+    strategy: str = Field("shadow", description="Deployment strategy")
+    initial_traffic: Optional[float] = Field(None, description="Initial traffic percentage", ge=0, le=100)
+
+
+class ModelDeploymentResponse(BaseModel):
+    """
+    Represents the response for a model deployment.
+
+    Attributes:
+        success (bool): Whether deployment was successful
+        model_version_id (str): ID of deployed model version
+        strategy (str): Deployment strategy used
+        traffic_percentage (float): Current traffic percentage
+        deployed_at (str): Deployment timestamp
+        message (str): Status message
+    """
+    success: bool
+    model_version_id: str
+    strategy: str
+    traffic_percentage: float
+    deployed_at: str
+    message: str
+
+
+class ModelTrafficUpdateRequest(BaseModel):
+    """
+    Represents a request to update model traffic percentage.
+
+    Attributes:
+        model_version_id (str): ID of model version
+        traffic_percentage (float): New traffic percentage (0-100)
+    """
+    model_version_id: str
+    traffic_percentage: float = Field(..., ge=0, le=100, description="Traffic percentage")
+
+
+class ModelRollbackRequest(BaseModel):
+    """
+    Represents a request to rollback a model deployment.
+
+    Attributes:
+        model_version_id (str): ID of model version to rollback
+        restore_previous (bool): Whether to restore previous version
+    """
+    model_version_id: str
+    restore_previous: bool = Field(True, description="Restore previous deployed version")
+
+
+class DriftDetectionRequest(BaseModel):
+    """
+    Represents a request for drift detection.
+
+    Attributes:
+        model_version_id (str): ID of model version to check
+        drift_threshold (float): Threshold for drift detection (0.0-1.0)
+        reference_window_days (Optional[int]): Days for reference period
+        detection_window_days (Optional[int]): Days for detection period
+    """
+    model_version_id: str
+    drift_threshold: float = Field(0.1, ge=0.0, le=1.0, description="Drift threshold")
+    reference_window_days: Optional[int] = Field(30, ge=1, le=90)
+    detection_window_days: Optional[int] = Field(7, ge=1, le=30)
+
+
+class DriftDetectionResponse(BaseModel):
+    """
+    Represents the response for drift detection.
+
+    Attributes:
+        model_version_id (str): ID of model version
+        drift_detected (bool): Whether drift was detected
+        drift_threshold (float): Threshold used
+        feature_drift (Dict[str, Any]): Feature drift details
+        concept_drift (Dict[str, Any]): Concept drift details
+        performance_drift (Dict[str, Any]): Performance drift details
+        recommendation (str): Recommended action
+        reference_period (Dict[str, Any]): Reference period info
+        detection_period (Dict[str, Any]): Detection period info
+    """
+    model_version_id: str
+    drift_detected: bool
+    drift_threshold: float
+    feature_drift: Dict[str, Any]
+    concept_drift: Dict[str, Any]
+    performance_drift: Dict[str, Any]
+    recommendation: str
+    reference_period: Dict[str, Any]
+    detection_period: Dict[str, Any]
+
+
+class ModelComparisonRequest(BaseModel):
+    """
+    Represents a request to compare two model versions.
+
+    Attributes:
+        model_version_id_a (str): ID of first model version
+        model_version_id_b (str): ID of second model version
+        time_window_hours (int): Time window for comparison
+    """
+    model_version_id_a: str
+    model_version_id_b: str
+    time_window_hours: int = Field(24, ge=1, le=168, description="Time window in hours")
+
+
+class ModelComparisonResponse(BaseModel):
+    """
+    Represents the response for model comparison.
+
+    Attributes:
+        model_a (Dict[str, Any]): Metrics for model A
+        model_b (Dict[str, Any]): Metrics for model B
+        winner (str): Which model performed better
+        time_window_hours (int): Time window used
+    """
+    model_a: Dict[str, Any]
+    model_b: Dict[str, Any]
+    winner: str
+    time_window_hours: int
+
+
+class ModelRetrainingRequest(BaseModel):
+    """
+    Represents a request to retrain a model.
+
+    Attributes:
+        model_name (str): Name of model to retrain
+        start_date (Optional[str]): Training data start date (ISO format)
+        end_date (Optional[str]): Training data end date (ISO format)
+        hyperparameter_tuning (bool): Whether to tune hyperparameters
+        contamination (Optional[float]): Expected anomaly proportion
+    """
+    model_name: str
+    start_date: Optional[str] = None
+    end_date: Optional[str] = None
+    hyperparameter_tuning: bool = Field(True, description="Enable hyperparameter tuning")
+    contamination: Optional[float] = Field(None, ge=0.0, le=1.0)
+
+
+class ModelRetrainingResponse(BaseModel):
+    """
+    Represents the response for model retraining.
+
+    Attributes:
+        success (bool): Whether retraining was successful
+        model_version_id (str): ID of new model version
+        model_name (str): Name of model
+        version (str): Version string
+        metrics (Dict[str, Any]): Training metrics
+        training_duration_seconds (float): Training time
+        message (str): Status message
+    """
+    success: bool
+    model_version_id: str
+    model_name: str
+    version: str
+    metrics: Dict[str, Any]
+    training_duration_seconds: float
+    message: str
+
+
+class ModelVersionInfo(BaseModel):
+    """
+    Represents detailed information about a model version.
+
+    Attributes:
+        id (str): Model version ID
+        model_id (str): Parent model ID
+        version (str): Version string
+        is_deployed (bool): Deployment status
+        traffic_percentage (float): Current traffic percentage
+        deployed_at (Optional[str]): Deployment timestamp
+        created_at (str): Creation timestamp
+        metrics (Dict[str, Any]): Model metrics
+        hyperparameters (Dict[str, Any]): Hyperparameters used
+        training_duration_seconds (Optional[float]): Training time
+    """
+    id: str
+    model_id: str
+    version: str
+    is_deployed: bool
+    traffic_percentage: float
+    deployed_at: Optional[str]
+    created_at: str
+    metrics: Dict[str, Any]
+    hyperparameters: Dict[str, Any]
+    training_duration_seconds: Optional[float] = None
+
+
+class DeploymentStatusResponse(BaseModel):
+    """
+    Represents current deployment status for a model.
+
+    Attributes:
+        model_id (str): Model ID
+        deployed_versions (List[Dict[str, Any]]): List of deployed versions
+        total_versions (int): Total number of deployed versions
+        traffic_allocated (float): Total traffic percentage allocated
+    """
+    model_id: str
+    deployed_versions: List[Dict[str, Any]]
+    total_versions: int
+    traffic_allocated: float
+
+
+class CacheStatsResponse(BaseModel):
+    """
+    Represents model cache statistics.
+
+    Attributes:
+        enabled (bool): Whether caching is enabled
+        cached_models (int): Number of models in cache
+        ttl_hours (Optional[int]): Cache TTL in hours
+        models (Optional[List[Dict[str, Any]]]): Cached model details
+    """
+    enabled: bool
+    cached_models: int
+    ttl_hours: Optional[int] = None
+    models: Optional[List[Dict[str, Any]]] = None
